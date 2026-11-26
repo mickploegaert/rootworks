@@ -1,0 +1,33 @@
+{
+  "name": "rootworks",
+  "private": true,
+  "version": "0.1.0",
+  "type": "module",
+  "scripts": {
+    "dev": "vite",
+    "build": "tsc --noEmit && vite build",
+    "preview": "vite preview",
+    "check": "node --experimental-transform-types --no-warnings src/game/core/iso.check.ts && node --experimental-transform-types --no-warnings src/game/gameplay.check.ts && node --experimental-transform-types --no-warnings src/game/scripting.check.ts && node --experimental-transform-types --no-warnings src/game/save.check.ts && node --experimental-transform-types --no-warnings src/game/production.check.ts && node --experimental-transform-types --no-warnings src/game/menu/menu.check.ts && node --experimental-transform-types --no-warnings src/game/world/regions.check.ts"
+  },
+  "dependencies": {
+    "@codemirror/commands": "^6.11.2",
+    "@codemirror/lang-java": "^6.0.2",
+    "@codemirror/lang-javascript": "^6.2.5",
+    "@codemirror/lang-python": "^6.2.1",
+    "@codemirror/language": "^6.13.1",
+    "@codemirror/state": "^6.7.6",
+    "@codemirror/view": "^6.44.1",
+    "@lezer/highlight": "^1.2.5",
+    "codemirror": "^6.0.2",
+    "pixi.js": "^8.23.0",
+    "react": "^19.3.1",
+    "react-dom": "^19.3.1"
+  },
+  "devDependencies": {
+    "@types/react": "^19.3.3",
+    "@types/react-dom": "^19.3.0",
+    "@vitejs/plugin-react": "^6.3.0",
+    "typescript": "^7.0.2",
+    "vite": "^8.4.0"
+  }
+}
