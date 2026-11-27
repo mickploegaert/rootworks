@@ -7,6 +7,8 @@ export type { TileRect };
 
 /** Hover, selection and route markers drawn flat on the ground (raised to the tile's elevation). */
 export class SelectionOverlay {
+  /** Colour of the selection frame: follows the interface theme. */
+  color = 0xf0a3bf;
   readonly view = new Container();
   private readonly hover = new Graphics();
   private readonly selected = new Graphics();
@@ -28,7 +30,7 @@ export class SelectionOverlay {
 
   setSelected(r: TileRect | null): void {
     this.selected.clear();
-    if (r) this.selected.poly(this.diamond(r)).fill({ color: 0xffd062, alpha: 0.16 }).stroke({ width: 2, color: 0xffd062, alpha: 1 });
+    if (r) this.selected.poly(this.diamond(r)).fill({ color: this.color, alpha: 0.16 }).stroke({ width: 2, color: this.color, alpha: 1 });
   }
 
   /** Footprint of a structure being placed: green when it fits, red when it does not. */

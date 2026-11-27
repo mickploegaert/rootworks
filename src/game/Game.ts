@@ -1,6 +1,6 @@
 import { RobotCommands } from './api/RobotCommands.ts';
 import { Camera } from './camera/Camera.ts';
-import { TILE_H, TILE_W, tileToWorld } from './core/iso.ts';
+import { HEIGHT_UNIT, TILE_H, TILE_W, tileToWorld } from './core/iso.ts';
 import { Emitter } from './core/Emitter.ts';
 import type { Entity, TileRect } from './entities/Entity.ts';
 import { ConstructionSite } from './entities/ConstructionSite.ts';
@@ -16,6 +16,7 @@ import type { SaveFile } from './save/GameSave.ts';
 import type { RunnerSave } from './scripting/ProgramRunner.ts';
 import { BUILDINGS, buildingById, type BuildCategory } from './building/BuildingDefs.ts';
 import { LANGUAGES } from './scripting/adapters.ts';
+import { withoutComment } from './scripting/comments.ts';
 import { createHostFunctions } from './scripting/hostApi.ts';
 import { ProgramRunner, type RunState } from './scripting/ProgramRunner.ts';
 import { ScriptError, type HostApi, type LanguageId } from './scripting/types.ts';
@@ -24,6 +25,10 @@ import { isAdjacent } from './world/Pathfinder.ts';
 import { PARCEL, TILE_INFO } from './world/World.ts';
 import { RESEARCH, researchById, type SkillBranch } from './research/ResearchDefs.ts';
 import { KIT_SECONDS, SPARKS_PER_KIT } from './research/ResearchSystem.ts';
+import { ACHIEVEMENTS, COSMETIC_NAMES } from './progress/Achievements.ts';
+import { CHAPTERS, type StoryBook } from './progress/Story.ts';
+import { IntroDirector, type IntroEvent } from './cinematic/Intro.ts';
+import type { CosmeticId } from './render/sprites/robot.ts';
 import { CHALLENGES, SPARKS_PER_STAR, codeLines, dailyOrder, today, type RunStats } from './progress/Challenges.ts';
 import type { ResourceAmounts } from './inventory/Inventory.ts';
 import { BIOMES } from './world/biomes.ts';
@@ -56,6 +61,8 @@ export interface SelectionInfo {
     program?: { code: string; note: string };
     /** A Lab: what it is researching, in words. */
     research?: string;
+    /** Something the player built: it can be moved or taken down for this refund. */
+    owned?: { refund: ResourceLine[] };
   };
   /** Land ownership of the selected tile's parcel. */
   parcel: { px: number; py: number; locked: boolean; problem: string | null; cost: ResourceLine[] };
@@ -89,7 +96,7 @@ export interface HudSnapshot {
   /** Everything buildable, with affordability. */
   catalog: CatalogEntry[];
   /** The structure being placed, if any, and why it can't go under the cursor. */
-  build: { id: string; name: string; problem: string | null; overMap: boolean } | null;
+  build: { id: string; name: string; problem: string | null; overMap: boolean; moving: boolean } | null;
   /** Time of day, e.g. "Dusk". */
   timeOfDay: string;
   research: ResearchView;
@@ -98,6 +105,12 @@ export interface HudSnapshot {
   robotNames: string[];
   challenges: { id: string; title: string; description: string; unit: string; tiers: number[]; better: 'higher' | 'lower'; stars: number; best: number | null }[];
   daily: { from: string; item: ResourceLine; got: number; done: boolean; sparks: number };
+  wardrobe: { worn: CosmeticId | null; owned: CosmeticId[] };
+  achievements: { id: string; title: string; description: string; done: boolean; cosmetic: string | null }[];
+  /** The valley's story: the current chapter's letter and goals, or Eternal Spring's offering. */
+  story: StoryView;
+  /** Which parts of the interface the player has reached: the game opens up one piece at a time. */
+  unlocked: Unlocks;
   /** The running program's numbers, for the editor. */
   run: { delivered: number; seconds: number; lines: number } | null;
   guided: boolean;
@@ -136,6 +149,22 @@ export interface GameEvents {
   tutorial: string[];
   /** A snippet the player chose to add to their program. */
   insertCode: string;
+  /** A milestone was reached, with a small photo of the valley for the album. */
+  achievement: { id: string; title: string; description: string; image: string | null; day: string };
+  /** The first-time intro moved on: what the overlay shows. */
+  intro: IntroEvent;
+  /** A sound cue from the intro. */
+  cue: 'wake' | 'glow' | 'spark' | 'title';
+  /** A chapter of the story finished: its closing words, the next letter, and a photo of the Heart Tree. */
+  story: { done: { title: string; from: string; text: string; sparks: number }; next: { title: string; from: string; letter: string } | null; bloom: number; image: string | null };
+}
+
+/** Parts of the interface that appear as the player gets to them (see Game.unlocks). */
+export interface Unlocks { board: boolean; orders: boolean; skills: boolean; build: boolean; stars: boolean; map: boolean; editorExtras: boolean }
+
+export interface StoryView {
+  chapter: number; chapters: number; title: string; from: string; letter: string; bloom: number; eternal: boolean; level: number; open: boolean;
+  goals: { text: string; value: number; target: number }[];
 }
 
 const CONSOLE_MAX_PRINT = 2000;
@@ -143,6 +172,8 @@ const CONSOLE_MAX_PRINT = 2000;
 const LESSON_SPARKS = 1;
 
 const STEP = 1 / 60;
+/** Most game time one background tick may catch up (browsers can delay hidden-tab timers to once a minute). */
+const MAX_BACKGROUND_STEP = 120;
 const LOG_SIZE = 5;
 
 const line = (id: ResourceId, amount: number): ResourceLine => ({ id, name: RESOURCES[id].name, color: RESOURCES[id].color, amount });
@@ -238,6 +269,8 @@ export class Game {
     this.sim.research.events.on('sparked', (n) => { this.note(`+${n} Sparks from the Lab`, true); this.tutorialMark('research'); this.emitHud(true); });
     this.sim.entities.events.on('added', (e) => {
       if (e instanceof Machine && (e.machineId === 'workbench' || e.machineId === 'lab')) this.tutorialMark(e.machineId);
+      if (e instanceof Machine) this.achieve('first_machine');
+      if (e instanceof Machine && e.machineId === 'sawmill') this.tutorialMark('sawmill');
     });
   }
 
@@ -253,6 +286,80 @@ export class Game {
 
   private get programActive(): boolean { return this.runners.some((r) => r?.isActive); }
 
+  /**
+   * The order the interface opens up, from what the player has done (not only the tutorial, so a save from before
+   * this, or a player who turned the tutorial off, never loses anything they have reached):
+   * first only Seedling, the editor and storage; the Valley board after the first delivery; Skills once lessons have
+   * paid Sparks; Build and Orders with the first skill; Stars after a second; the map with Surveying or chapter 3.
+   */
+  private unlocks(): Unlocks {
+    const sim = this.sim, learned = sim.research.completed, tut = new Set(this.tutorial.completed), ch = sim.story.chapter;
+    const built = sim.machines.some((m) => m.machineId !== 'heart');
+    const u: Unlocks = {
+      board: sim.achievements.delivered > 0 || learned.size > 0 || ch > 0,
+      skills: tut.has('deposit') || learned.size > 0 || ch > 0,
+      build: learned.size > 0 || built || ch > 0,
+      orders: learned.size > 0 || built || ch > 0,
+      stars: learned.size >= 2 || ch > 0,
+      map: learned.has('surveying') || ch >= 2,
+      editorExtras: this.tutorial.complete || learned.size >= 4,
+    };
+    const NAMES: Partial<Record<keyof Unlocks, string>> = { board: 'the Valley board (top left)', skills: 'Skills (top)', build: 'Build (bottom)', orders: 'Orders on the board', stars: 'Stars: challenges for your programs', map: 'the World map (top)' };
+    if (this.seenUnlocks) for (const k of Object.keys(NAMES) as (keyof Unlocks)[]) if (u[k] && !this.seenUnlocks[k]) {
+      this.out('system', `New: ${NAMES[k]}.`);
+      this.log = [{ id: ++this.logId, text: `New: ${NAMES[k]}`, ok: true }, ...this.log].slice(0, LOG_SIZE);
+    }
+    this.seenUnlocks = u;
+    return u;
+  }
+  private seenUnlocks: Unlocks | null = null;
+
+  private storyView(): StoryView {
+    const st = this.sim.story, ch = st.current;
+    return {
+      chapter: st.chapter, chapters: CHAPTERS.length, bloom: st.bloom, eternal: st.eternal, level: st.level, open: st.open,
+      title: ch ? ch.title : `Eternal Spring · level ${st.level + 1}`, from: ch ? ch.from : 'the Heart Tree',
+      letter: ch ? ch.letter : `The tree gives ${st.level + 1} Spark${st.level ? 's' : ''} a minute. Bring it a bigger offering and it gives more.`,
+      goals: st.progress(this.sim),
+    };
+  }
+
+  /** The story moved on: tell the player, turn to the Heart Tree, and take its photo in its new bloom. */
+  private storyMoment(ev: NonNullable<ReturnType<StoryBook['update']>>): void {
+    if (ev.sparks) { this.out('system', `The Heart Tree gave ${ev.sparks} Spark${ev.sparks > 1 ? 's' : ''}.`); return; }
+    if (ev.level) { this.out('system', `Eternal Spring: the Heart Tree reached level ${ev.level}.`); this.note(`Heart Tree level ${ev.level}`, true); this.emitHud(true); return; }
+    const ch = ev.chapter!, next = this.sim.story.current, st = this.sim.story;
+    this.out('system', `Chapter complete: ${ch.title}. +${ch.sparks} Sparks.`);
+    this.renderer.cheer(3); // the robots dance
+    this.note(`Chapter complete: ${ch.title}`, true);
+    const heart = this.sim.machines.find((m) => m.machineId === 'heart');
+    if (heart) this.camera.panTo(tileToWorld(heart.tileX + 1, heart.tileY + 1));
+    // the photo waits a moment, for the camera to arrive and the tree to show its new bloom
+    window.setTimeout(() => void this.renderer.snapshot().then((image) => this.events.emit('story', {
+      done: { title: ch.title, from: ch.from, text: ch.done, sparks: ch.sparks },
+      next: next ? { title: next.title, from: next.from, letter: next.letter } : null, bloom: st.bloom, image,
+    })), 1200);
+    this.emitHud(true);
+  }
+
+  /** Reach a milestone: a console line, a photo for the album, and maybe a new accessory. */
+  private achieve(id: string): void {
+    const a = this.sim.achievements.unlock(id);
+    if (!a) return;
+    this.out('system', `Achievement: ${a.title}. ${a.description}${a.cosmetic ? ` Seedling can now wear the ${COSMETIC_NAMES[a.cosmetic]}.` : ''}`);
+    this.note(`Achievement: ${a.title}`, true);
+    void this.renderer.snapshot().then((image) => this.events.emit('achievement', { id: a.id, title: a.title, description: a.description, image, day: today() }));
+    this.emitHud(true);
+  }
+
+  /** Choose Seedling's accessory (null: none). Only earned ones can be worn. */
+  wear(id: CosmeticId | null): void {
+    if (id && !this.sim.achievements.cosmetics.includes(id)) return;
+    this.sim.achievements.cosmetic = id;
+    this.renderer.setCosmetic(id);
+    this.emitHud(true);
+  }
+
   /** Count what a robot delivers to storage: for the run's statistics and today's order. */
   private watchRobot(r: Robot): void {
     r.queue.events.on('finished', (res) => {
@@ -260,12 +367,16 @@ export class Game {
       const moved = (res.action === 'deposit()' ? res.data?.deposited : res.data?.into === 'storage' ? res.data?.moved : null) as Record<string, number> | null | undefined;
       if (!moved) return;
       for (const [id, n] of Object.entries(moved)) {
+        this.sim.achievements.delivered += n;
+        this.achieve('first_delivery');
+        if (this.sim.achievements.delivered >= 100) this.achieve('hundred');
         if (this.run) { this.run.stats.delivered += n; this.run.stats.byItem[id as ResourceId] = (this.run.stats.byItem[id as ResourceId] ?? 0) + n; }
         if (this.sim.challenges.deliver(id as ResourceId, n)) {
           const o = dailyOrder(today());
           this.sim.research.sparks += o.sparks;
           this.out('system', `Daily order done: ${o.from} thanks you for ${o.amount} ${RESOURCES[o.item].name}. +${o.sparks} Sparks.`);
           this.note(`Daily order for ${o.from} delivered`, true);
+          this.achieve('daily');
         }
       }
     });
@@ -279,6 +390,8 @@ export class Game {
       this.sim.research.sparks += gained * SPARKS_PER_STAR;
       this.out('system', `Challenge "${c.title}": ${'★'.repeat(stars)}${'☆'.repeat(3 - stars)} +${gained * SPARKS_PER_STAR} Sparks.`);
       this.note(`${c.title}: ${stars} star${stars > 1 ? 's' : ''}`, true);
+      this.achieve('star');
+      this.tutorialMark('star');
     }
   }
 
@@ -308,7 +421,11 @@ export class Game {
     this.note(`Learned ${name}`, true);
     for (const r of this.sim.robots) this.sim.applySkills(r);
     this.renderer.setRobotStage(this.sim.research.firmware);
-    if (id === 'loop') this.tutorialMark('automate');
+    this.renderer.setCosmetic(this.sim.achievements.cosmetic);
+    if (id === 'loop') { this.tutorialMark('automate'); this.achieve('automation'); }
+    if (id === 'operators') this.tutorialMark('variables');
+    if (id === 'sense') this.tutorialMark('decide');
+    if (this.sim.research.completed.size >= 5) this.achieve('skills5');
   }
 
   static async create(host: HTMLElement, opts: { seed?: number; tutorialDone?: readonly string[]; dayStart?: number; save?: SaveFile | null } = {}): Promise<Game> {
@@ -348,9 +465,51 @@ export class Game {
     });
   }
 
-  private async init(host: HTMLElement): Promise<void> {
+  // ------------------------------------------------------------ the first-time intro
+
+  private intro: IntroDirector | null = null;
+
+  /** Play the intro (a new game, the first time). It drives camera and Seedling until it ends or is skipped. */
+  playIntro(): void {
+    const world = this.sim.world, r = this.robot, cin = this.renderer.cinematic;
+    this.renderer.showParcels(false);
+    this.intro = new IntroDirector({
+      look: (tx, ty, zoom) => {
+        const p = tileToWorld(tx, ty), h = world.heightAt(Math.floor(tx), Math.floor(ty)) * HEIGHT_UNIT;
+        this.camera.snapTo({ x: p.x, y: p.y - h - 20 }, zoom);
+      },
+      seedling: cin,
+      face: (f) => { r.facing = f; },
+      walkTo: (tx, ty) => { this.commands.approach(tx, ty); },
+      flash: (tx, ty, color) => this.renderer.flash(tx, ty, color),
+      cue: (name) => this.events.emit('cue', name),
+      emit: (e) => {
+        this.events.emit('intro', e);
+        if (e.phase === 'done') this.endIntro();
+      },
+    }, this.reducedMotion);
+  }
+
+  /** Skip the intro: straight to the game, as if it had played to the end. */
+  skipIntro(): void { this.intro?.finish(); }
+
+  private endIntro(): void {
+    // Seedling back on its cradle, the camera on the yard: exactly where a game without the intro starts
+    this.commands.stop();
+    this.intro = null;
+    this.renderer.showParcels(true);
+    const s = this.region.spawn;
+    Object.assign(this.robot, { tileX: s.x, tileY: s.y + 1, posX: s.x + 0.5, posY: s.y + 1.5, facing: 1 });
+    this.homeCamera();
+  }
+
+  private homeCamera(): void {
     const c = tileToWorld(this.region.spawn.x, this.region.spawn.y);
     this.camera.snapTo({ x: c.x, y: c.y - 30 }, 2);
+  }
+
+  private async init(host: HTMLElement): Promise<void> {
+    this.homeCamera();
     await this.renderer.init(host, this.sim.entities, this.camera);
     this.renderer.setRobotStage(this.sim.research.firmware);
     this.input = new InputController(this.renderer.app.canvas, this.camera, {
@@ -364,6 +523,7 @@ export class Game {
       onRotate: () => this.rotateBuildTool(),
     });
     this.renderer.onTick((dt) => this.frame(dt));
+    this.watchVisibility();
     this.emitHud(true);
   }
 
@@ -376,6 +536,12 @@ export class Game {
   private click(t: { x: number; y: number } | null): void {
     if (!this.buildTool) { this.select(t); return; }
     if (!t) return;
+    if (this.moving) {
+      const e = this.moving, problem = this.sim.move(e, t.x, t.y);
+      this.note(problem ?? `Moved ${e.name}`, !problem);
+      if (!problem) { this.moving = null; this.setBuildTool(null); this.renderer.drawParcels(); }
+      return;
+    }
     const def = buildingById(this.buildTool.id)!;
     const problem = this.sim.building.place(def.id, this.buildTool.variant, t.x, t.y);
     this.note(problem ?? `Built ${def.name}`, !problem);
@@ -384,8 +550,32 @@ export class Game {
 
   // ------------------------------------------------------------ building
 
+  /** The player building being moved, while the ghost follows the cursor. */
+  private moving: Entity | null = null;
+
+  /** Pick up the selected building to put it somewhere else (Esc cancels; nothing changes until it is placed). */
+  moveSelected(): void {
+    const e = this.selected && this.sim.entities.at(this.selected.x, this.selected.y);
+    const def = e && this.sim.playerBuilding(e);
+    if (!e || !def) return;
+    this.setBuildTool(def.id);
+    this.buildTool!.variant = Math.max(0, def.variants.indexOf(e.spriteId));
+    this.moving = e;
+    this.note(`Moving ${e.name}: click a free spot, Esc to cancel`, true);
+  }
+
+  /** Take the selected building down (half its cost comes back; all of it for an unfinished site). */
+  demolishSelected(): void {
+    const e = this.selected && this.sim.entities.at(this.selected.x, this.selected.y);
+    if (!e) return;
+    const name = e.name, problem = this.sim.demolish(e);
+    this.note(problem ?? `${name} taken down`, !problem);
+    if (!problem) { this.out('system', `${name} taken down: materials went back to storage.`); this.select(null); }
+  }
+
   /** Choose a structure to place (null leaves build mode). Placement is the one hands-on action players have. */
   setBuildTool(id: string | null): void {
+    if (!id) this.moving = null;
     this.buildTool = id && buildingById(id) ? { id, variant: 0 } : null;
     if (this.buildTool) this.select(null);
     this.updateGhost();
@@ -405,7 +595,10 @@ export class Game {
     const tool = this.buildTool, t = this.hoverTile;
     if (!tool || !t) { this.renderer.setGhost(null); return; }
     const def = buildingById(tool.id)!;
-    const problem = this.sim.building.check(def.id, t.x, t.y);
+    const moving = this.moving;
+    if (moving) this.sim.entities.remove(moving); // the building being moved must not block its own new spot
+    const problem = this.sim.building.check(def.id, t.x, t.y, !!moving);
+    if (moving) this.sim.entities.add(moving);
     this.renderer.setGhost({ spriteId: def.variants[tool.variant % def.variants.length], rect: { x: t.x, y: t.y, w: def.width, d: def.depth }, valid: !problem });
     this.ghostProblem = problem;
   }
@@ -458,6 +651,7 @@ export class Game {
   }
 
   private report(r: ActionResult): void {
+    if (this.intro) return; // the intro's own walk is not the player's
     if (this.programActive && this.tutorial.observe(r)) this.tutorialProgress();
     if (this.programActive) return; // the console reports program actions
     if (!r.ok) {
@@ -480,14 +674,41 @@ export class Game {
 
   // ------------------------------------------------------------ loop
 
-  private frame(dt: number): void {
-    this.input.update(dt);
-    // fixed-step simulation so robot programs run deterministically
+  /** Fixed-step simulation, so robot programs run deterministically; also used while the tab is in the background. */
+  private advance(dt: number): void {
     for (this.acc += dt * this.speed; this.acc >= STEP; this.acc -= STEP) {
       for (const r of this.runners) r?.tick();
       this.sim.update(STEP);
     }
     this.time += dt;
+  }
+
+  /**
+   * An idle game keeps working when its tab is hidden: browsers stop animation frames there, so a timer advances the
+   * simulation by the real time that passed (timers still fire in the background, if slowly).
+   */
+  private watchVisibility(): void {
+    let timer = 0, last = 0;
+    const tick = () => {
+      const now = performance.now(), dt = Math.min(MAX_BACKGROUND_STEP, (now - last) / 1000);
+      last = now;
+      this.advance(dt);
+      this.emitHud();
+    };
+    const change = () => {
+      window.clearInterval(timer);
+      if (document.hidden) { last = performance.now(); timer = window.setInterval(tick, 1000); }
+    };
+    document.addEventListener('visibilitychange', change);
+    this.unwatch.push(() => { document.removeEventListener('visibilitychange', change); window.clearInterval(timer); });
+  }
+  private readonly unwatch: (() => void)[] = [];
+
+  private frame(dt: number): void {
+    this.input.update(dt);
+    this.advance(dt);
+    this.intro?.update(dt);
+    for (const ev of this.sim.storyEvents.splice(0)) this.storyMoment(ev);
     for (const c of this.sim.completedCommissions.splice(0)) {
       this.out('system', `Commission complete: ${c.title}. Reward added to storage.`);
       this.note(`Commission: ${c.title}`, true);
@@ -534,7 +755,13 @@ export class Game {
       }
     }
     if (e instanceof ConstructionSite && entity) entity.construction = e.progress;
-    if (e instanceof Machine && entity) {
+    if (e instanceof Machine && e.machineId === 'heart' && entity) { // a tree, not a machine: no buffers, its story instead
+      const st = this.sim.story;
+      entity.sprite = `heart_${e.stage}`;
+      entity.research = st.open
+        ? `It takes offerings: planks, bricks and research kits. Program a robot: go_to("heart") then put(). Bloom ${st.bloom}/5${st.eternal ? `, spring level ${st.level}` : ''}.`
+        : `Bloom ${st.bloom}/5. It wakes a little with every chapter of the valley's story (the Valley tab), and takes offerings at the Blossom Festival.`;
+    } else if (e instanceof Machine && entity) {
       const lines = (a: ResourceAmounts) => Object.entries(a).map(([id, n]) => line(id as ResourceId, n!));
       entity.machine = {
         recipes: e.def.recipes.map((r) => ({ name: r.name, inputs: lines(r.inputs), outputs: lines(r.outputs), time: r.time })),
@@ -544,6 +771,11 @@ export class Game {
       };
     }
     if (entity && e) entity.program = programFor(e);
+    const def = e && this.sim.playerBuilding(e);
+    if (entity && e && def) {
+      const share = e instanceof ConstructionSite ? 1 : 0.5;
+      entity.owned = { refund: Object.entries(def.cost).map(([id, n]) => line(id as ResourceId, Math.floor(n! * share))).filter((l) => l.amount > 0) };
+    }
     if (e instanceof Machine && e.machineId === 'lab' && entity) {
       entity.research = `Turns each Research Kit into ${SPARKS_PER_KIT} Sparks (${KIT_SECONDS} s). Spend Sparks on new skills in the Skills tab. You have ${this.sim.research.sparks}.`;
     }
@@ -586,11 +818,15 @@ export class Game {
     const at = { x: bay.tileX, y: bay.tileY + 1 };
     const problem = this.sim.assembleRobot(at);
     this.note(problem ?? `${this.sim.robots.at(-1)!.name} assembled`, !problem);
-    if (!problem) { this.watchRobot(this.sim.robots.at(-1)!); this.out('system', `A new robot joined. Press Run to start your program on all ${this.sim.robots.length} robots.`); }
+    if (!problem) { this.watchRobot(this.sim.robots.at(-1)!); this.achieve('fleet'); this.tutorialMark('robot2'); this.out('system', `A new robot joined. Press Run to start your program on all ${this.sim.robots.length} robots.`); }
     this.emitHud(true);
   }
 
-  setReducedMotion(on: boolean): void { this.renderer.setAmbient(!on); }
+  /** The interface theme also tints the selection frame in the world. */
+  setTheme(theme: 'sakura' | 'workshop'): void { this.renderer.selection.color = theme === 'sakura' ? 0xf0a3bf : 0xffd062; this.select(this.selected); }
+
+  private reducedMotion = false;
+  setReducedMotion(on: boolean): void { this.reducedMotion = on; this.renderer.setAmbient(!on); }
 
   setGuided(on: boolean): void { this.guided = on; this.emitHud(true); }
 
@@ -624,7 +860,7 @@ export class Game {
         cost: Object.entries(d.cost).map(([id, n]) => ({ ...line(id as ResourceId, n!), have: storage?.get(id as ResourceId) ?? 0 })),
         locked: this.sim.building.isUnlocked(d) ? null : (d.requires && researchById(d.requires)?.name) ?? d.requires,
       })),
-      build: this.buildTool ? { id: this.buildTool.id, name: buildingById(this.buildTool.id)!.name, problem: this.hoverTile ? this.ghostProblem : null, overMap: !!this.hoverTile } : null,
+      build: this.buildTool ? { id: this.buildTool.id, name: buildingById(this.buildTool.id)!.name, problem: this.hoverTile ? this.ghostProblem : null, overMap: !!this.hoverTile, moving: !!this.moving } : null,
       timeOfDay: this.renderer.daylight.label,
       research: this.researchView(),
       commissions: this.sim.commissions.active().map((c) => ({
@@ -637,6 +873,10 @@ export class Game {
         stars: this.sim.challenges.stars.get(c.id) ?? 0, best: this.sim.challenges.best.get(c.id) ?? null })),
       daily: (() => { const o = dailyOrder(today()), d = this.sim.challenges.daily; const mine = d.day === o.day;
         return { from: o.from, item: line(o.item, o.amount), got: mine ? Math.min(d.got, o.amount) : 0, done: mine && d.done, sparks: o.sparks }; })(),
+      wardrobe: { worn: this.sim.achievements.cosmetic, owned: this.sim.achievements.cosmetics },
+      achievements: ACHIEVEMENTS.map((a) => ({ id: a.id, title: a.title, description: a.description, done: this.sim.achievements.done.has(a.id), cosmetic: a.cosmetic ? COSMETIC_NAMES[a.cosmetic] : null })),
+      story: this.storyView(),
+      unlocked: this.unlocks(),
       run: this.run ? { delivered: this.run.stats.delivered, seconds: Math.round(this.time - this.run.start), lines: this.run.stats.lines } : null,
       guided: this.guided,
       region: { id: this.region.id, name: this.region.name },
@@ -683,12 +923,15 @@ export class Game {
     const who = started.length === robots.length ? (many ? ` on all ${robots.length} robots` : '') : ` on ${started.map((i) => robots[i].name).join(', ')}`;
     this.out('system', resumeFrom ? `Program resumed from your save${many ? who : ''}.` : `Program started (${LANGUAGES[language].name})${who}.`);
     this.focus = started[0] ?? 0;
+    if (!resumeFrom) this.achieve('first_program');
+    if (!resumeFrom && robot !== null && robot > 0) this.tutorialMark('tabs');
     if (!resumeFrom) this.run = { start: this.time, stats: { delivered: 0, byItem: {}, lines: codeLines(source), robots: this.runners.filter((r) => r?.isActive).length, seconds: 0 } };
     const lines = source.split('\n');
     for (const i of started) {
       const runner = this.runners[i]!, r = robots[i];
       runner.events.on('line', (line) => {
-        r.bubble = line ? { text: (lines[line - 1] ?? '').trim().slice(0, 32), error: false } : null; // the robot "says" its line
+        const said = line ? withoutComment(lines[line - 1] ?? '').slice(0, 32) : '';
+        r.bubble = said ? { text: said, error: false } : null; // the robot "says" its line, without the # note for humans
         if (i === this.focus) this.setProgram({ ...this.program, line, variables: runner.variables });
       });
       runner.events.on('error', (err) => {
@@ -768,8 +1011,15 @@ export class Game {
         this.assembleRobot(); msg = `Robots: ${this.sim.robots.length}`; break;
       }
       case 'skiptutorial': for (const s of this.tutorial.steps) this.tutorial.mark(s.id); this.tutorialProgress(); msg = 'Tutorial complete'; break;
+      case 'chapter': {
+        const st = this.sim.story, ch = st.current;
+        if (!ch) { msg = 'The story is complete: Eternal Spring'; break; }
+        st.chapter++; r.sparks += ch.sparks; if (ch.id === 'festival') st.offered = {};
+        this.storyMoment({ chapter: ch }); msg = `Chapter finished: ${ch.title}`; break;
+      }
+      case 'intro': this.playIntro(); msg = 'Playing the intro'; break;
       case 'full': for (const robot of this.sim.robots) robot.inventory.add('scrap', robot.inventory.capacity - robot.inventory.total); msg = 'Every robot cargo hold is full'; break;
-      default: return `Unknown code "${code}". Try: sparks [n], rich [n], unlockall, builder, speed [x], land, fleet, skiptutorial, full`;
+      default: return `Unknown code "${code}". Try: sparks [n], rich [n], unlockall, builder, speed [x], land, fleet, skiptutorial, full, chapter, intro`;
     }
     this.out('system', `[dev] ${msg}`);
     this.emitHud(true);
@@ -812,6 +1062,7 @@ export class Game {
   refreshHud(): void { this.emitHud(true); }
 
   destroy(): void {
+    for (const f of this.unwatch) f();
     for (const r of this.runners) r?.stop();
     this.input?.destroy();
     this.renderer.destroy();

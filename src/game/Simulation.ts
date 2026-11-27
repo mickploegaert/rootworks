@@ -1,4 +1,5 @@
 import type { Entity } from './entities/Entity.ts';
+import { StoryBook } from './progress/Story.ts';
 import { EntityManager } from './entities/EntityManager.ts';
 import { ROBOT_CAPACITY, Robot } from './entities/Robot.ts';
 import { StorageDepot } from './entities/StorageDepot.ts';
@@ -7,15 +8,19 @@ import { Pathfinder } from './world/Pathfinder.ts';
 import type { World } from './world/World.ts';
 import { BuildingSystem } from './building/BuildingSystem.ts';
 import { ConstructionSite } from './entities/ConstructionSite.ts';
-import type { Machine } from './entities/Machine.ts';
 import { ResearchSystem } from './research/ResearchSystem.ts';
 import { CommissionBoard } from './progress/Commissions.ts';
 import { ChallengeBoard } from './progress/Challenges.ts';
+import { laneBonus } from './research/Lanes.ts';
+import { AchievementBook } from './progress/Achievements.ts';
 import { Robot as RobotClass } from './entities/Robot.ts';
 import { PARCEL } from './world/World.ts';
 import type { ResourceAmounts } from './inventory/Inventory.ts';
 import type { ResourceId } from './resources/ResourceDefs.ts';
 import { ResourceNode } from './entities/ResourceNode.ts';
+import { Machine } from './entities/Machine.ts';
+import { Prop } from './entities/Prop.ts';
+import { BUILDINGS, type BuildingDef } from './building/BuildingDefs.ts';
 import { applyProgress, applyRegion, captureRegion, entityKey, type Progress, type RegionSave } from './save/GameSave.ts';
 import { START_REGION, regionById, type RegionId } from './world/regions.ts';
 
@@ -29,6 +34,11 @@ export class Simulation {
   readonly research = new ResearchSystem();
   readonly commissions = new CommissionBoard();
   readonly challenges = new ChallengeBoard();
+  readonly achievements = new AchievementBook();
+  /** The valley's story and the Heart Tree (progress, shared by all regions). */
+  readonly story = new StoryBook();
+  /** Story moments since the game last looked: a chapter finished, a spring level, the tree's Sparks. */
+  readonly storyEvents: NonNullable<ReturnType<StoryBook['update']>>[] = [];
 
   constructor(readonly world: World, readonly entities: EntityManager) {
     this.pathfinder = new Pathfinder(world, entities);
@@ -175,7 +185,8 @@ export class Simulation {
   /** A robot's stats from the skills learned: cargo, speed, harvest yield. Safe to call again at any time. */
   applySkills(robot: Robot): void {
     const r = this.research;
-    robot.inventory.capacity = r.isDone('cargo2') ? 22 : r.isDone('cargo') ? 16 : ROBOT_CAPACITY;
+    robot.inventory.capacity = (r.isDone('cargo2') ? 22 : r.isDone('cargo') ? 16 : ROBOT_CAPACITY) + (laneBonus('robots', r.completed) ? 2 : 0);
+    robot.harvestSpeed = laneBonus('flow', r.completed) ? 1.15 : 1;
     robot.speed = 2.2 * (1 + 0.2 * ['speed1', 'speed2', 'speed3'].filter((s) => r.isDone(s)).length);
     robot.yieldBonus = r.isDone('yield1') ? 1 : 0;
   }
@@ -194,6 +205,41 @@ export class Simulation {
     }
   }
 
+  /** The building definition of something the player built (not part of the generated world), or null. */
+  playerBuilding(e: Entity): BuildingDef | null {
+    if (!(e instanceof Machine || e instanceof Prop || e instanceof ConstructionSite) || this.generated.has(entityKey(e))) return null;
+    const id = e instanceof ConstructionSite ? e.buildingId : null;
+    return BUILDINGS.find((b) => b.id === id || b.variants.includes(e.spriteId)) ?? null;
+  }
+
+  /** Take a player building down: half its cost back (all of it for an unfinished site), plus what a machine held. */
+  demolish(e: Entity): string | null {
+    const def = this.playerBuilding(e), store = this.storages[0]?.inventory;
+    if (!def || !store) return 'Only buildings you built can be taken down';
+    const share = e instanceof ConstructionSite ? 1 : 0.5;
+    for (const [id, n] of Object.entries(def.cost) as [ResourceId, number][]) store.add(id, Math.floor(n * share));
+    if (e instanceof Machine) for (const inv of [e.input, e.output]) for (const [id, n] of inv.entries()) store.add(id, n);
+    for (const r of this.robots) if (r.destination === e) r.destination = null;
+    this.entities.remove(e);
+    return null;
+  }
+
+  /** Move a player building to another spot, contents and all. Free of charge. */
+  move(e: Entity, x: number, y: number): string | null {
+    const def = this.playerBuilding(e);
+    if (!def) return 'Only buildings you built can be moved';
+    this.entities.remove(e); // its own tiles must not block the check
+    const problem = this.building.check(def.id, x, y, true);
+    if (!problem) {
+      e.tileX = x; e.tileY = y;
+      for (const v of [...this.entities.list()]) { // plants underfoot make way, as when building
+        if (v instanceof Prop && v.category === 'vegetation' && v.tileX >= x && v.tileX < x + def.width && v.tileY >= y && v.tileY < y + def.depth) this.entities.remove(v);
+      }
+    }
+    this.entities.add(e);
+    return problem;
+  }
+
   /** Machines with a windmill within WIND_RANGE tiles. */
   windBoosted(): Set<Machine> {
     const mills = this.entities.ofKind('prop').filter((p) => p.spriteId === 'turbine');
@@ -207,10 +253,15 @@ export class Simulation {
     for (const r of this.robots) r.queue.update(this.contextFor(r), dt);
     this.boostTimer -= dt;
     if (this.boostTimer <= 0) { this.boostTimer = 2; this.boosted = this.windBoosted(); }
-    for (const m of this.machines) if (m.machineId !== 'lab') m.update(this.boosted.has(m) ? dt * Simulation.WIND_BOOST : dt);
+    const lane = laneBonus('machines', this.research.completed) ? 1.1 : 1; // Machines milestone
+    for (const m of this.machines) if (m.machineId !== 'lab' && m.machineId !== 'heart') m.update((this.boosted.has(m) ? dt * Simulation.WIND_BOOST : dt) * lane);
     this.research.update(dt, this.machines.filter((m) => m.machineId === 'lab'));
     this.commissionTimer -= dt;
-    if (this.commissionTimer <= 0) { this.commissionTimer = 0.5; this.feed(); this.completedCommissions.push(...this.commissions.update(this)); }
+    if (this.commissionTimer <= 0) {
+      this.commissionTimer = 0.5; this.feed(); this.completedCommissions.push(...this.commissions.update(this));
+      const ev = this.story.update(this, 0.5, this.machines.find((m) => m.machineId === 'heart'));
+      if (ev) this.storyEvents.push(ev);
+    }
     for (const site of this.entities.ofKind<ConstructionSite>('construction')) {
       site.update(dt);
       if (!site.done) continue;

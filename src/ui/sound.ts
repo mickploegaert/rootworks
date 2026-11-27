@@ -19,9 +19,16 @@ const SOUNDS = {
   fail: [[220, 0, 0.16], [185, 0.1, 0.2]],
   learn: [[523, 0, 0.15], [659, 0.1, 0.15], [784, 0.2, 0.15], [1047, 0.3, 0.35]],
   lesson: [[784, 0, 0.12], [1047, 0.09, 0.25]],
+  // the intro: Seedling powers up, its sprout glows, the first spark, the title chord
+  wake: [[196, 0, 0.5], [247, 0.25, 0.5], [294, 0.5, 0.6], [392, 0.8, 0.9]],
+  glow: [[1047, 0, 0.6], [1319, 0.12, 0.6], [1568, 0.24, 0.8]],
+  spark: [[392, 0, 0.12], [523, 0.06, 0.12], [784, 0.12, 0.16], [1047, 0.2, 0.2], [1568, 0.3, 0.5]],
+  title: [[262, 0, 2.6], [330, 0.08, 2.6], [392, 0.16, 2.6], [523, 0.5, 2.4], [659, 0.9, 2.2]],
 } as const satisfies Record<string, readonly (readonly [number, number, number])[]>;
 
-export function play(name: keyof typeof SOUNDS, volume: number): void {
+export type SoundName = keyof typeof SOUNDS;
+
+export function play(name: SoundName, volume: number): void {
   if (volume <= 0 || typeof AudioContext === 'undefined') return;
   try {
     ctx ??= new AudioContext();

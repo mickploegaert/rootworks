@@ -9,7 +9,7 @@ export interface Recipe {
   time: number;
 }
 
-export type MachineId = 'workbench' | 'sawmill' | 'kiln' | 'lab';
+export type MachineId = 'workbench' | 'sawmill' | 'kiln' | 'lab' | 'heart';
 
 export interface MachineDef {
   id: MachineId;
@@ -38,4 +38,6 @@ export const MACHINES: Readonly<Record<MachineId, MachineDef>> = {
     recipes: [{ id: 'bricks', name: 'Bricks', inputs: { stone: 3 }, outputs: { bricks: 2 }, time: 6 }],
   },
   lab: { id: 'lab', name: 'Research Lab', inputCap: 10, outputCap: 0, recipes: [] },
+  /** The Heart Tree: not built, it was always there. It takes offerings for the valley's festival. */
+  heart: { id: 'heart', name: 'Heart Tree', inputCap: 999, outputCap: 0, recipes: [] },
 };

@@ -2,6 +2,7 @@ import type { ResourceAmounts } from '../inventory/Inventory.ts';
 import type { Machine } from '../entities/Machine.ts';
 import type { ResourceId } from '../resources/ResourceDefs.ts';
 import type { Simulation } from '../Simulation.ts';
+import { laneBonus } from '../research/Lanes.ts';
 
 export interface Commission {
   id: string;
@@ -48,7 +49,7 @@ export class CommissionBoard {
     for (const c of finished) {
       this.done.add(c.id);
       if (store) for (const [id, n] of Object.entries(c.reward)) store.add(id as ResourceId, n!);
-      sim.research.sparks += c.sparks;
+      sim.research.sparks += c.sparks + (laneBonus('land', sim.research.completed) ? 1 : 0); // Land & logistics milestone
     }
     return finished;
   }

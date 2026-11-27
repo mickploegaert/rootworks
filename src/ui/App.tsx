@@ -5,6 +5,12 @@ import { SaveSlot, type SlotId } from '../game/save/GameSave.ts';
 import { SettingsStore, type Settings } from '../game/save/Settings.ts';
 import { Hud } from './Hud.tsx';
 import { play, soundFor } from './sound.ts';
+import { addPhoto } from './album.ts';
+import { blossomCss } from './Blossom.tsx';
+import { IntroOverlay } from './Intro.tsx';
+import { DevLoginPage } from './DevMenu.tsx';
+
+const INTRO_KEY = 'rootworks.intro.v1';
 import { MainMenu, type StartRequest } from './menu/MainMenu.tsx';
 
 // the editor (CodeMirror + grammars) is a separate chunk so the world can load without waiting for it
@@ -27,19 +33,24 @@ export function App() {
   const [settings, setSettings] = useState<Settings>(settingsStore.value);
   const [screen, setScreen] = useState<{ kind: 'menu' } | ({ kind: 'game'; run: number } & StartRequest)>({ kind: 'menu' });
   const [slotsVersion, setSlotsVersion] = useState(0);
+  // typing localhost:5173/login in the address bar opens the developer login
+  const [loginPage, setLoginPage] = useState(() => location.pathname.replace(/\/+$/, '') === '/login');
   const slots = SaveSlot.all(storage);
   void slotsVersion; // bumping it re-reads the slots after a delete or a save
 
   const setSetting = <K extends keyof Settings>(id: K, value: Settings[K]) => setSettings(settingsStore.set(id, value));
-  const style = { '--ui-scale': settings.uiScale, '--code-font': `${settings.editorFont}px` } as React.CSSProperties;
+  const style = { '--ui-scale': settings.uiScale, '--code-font': `${settings.editorFont}px`, '--exec-flower': settings.theme === 'sakura' ? blossomCss() : 'none' } as React.CSSProperties;
 
   return (
-    <div className={`root ${settings.reducedMotion ? 'reduced-motion' : ''}`} style={style}>
+    <div className={`root theme-${settings.theme} ${settings.reducedMotion ? 'reduced-motion' : ''}`} style={style}>
+      {loginPage && <DevLoginPage onDone={() => { history.replaceState(null, '', '/'); setLoginPage(false); }} />}
       {screen.kind === 'menu'
         ? <MainMenu slots={slots} settings={settings} onSetting={setSetting}
             onStart={(req) => setScreen({ kind: 'game', run: Date.now(), ...req })}
             onDelete={(id) => { new SaveSlot(storage, id).clear(); setSlotsVersion((v) => v + 1); }} />
         : <GameView key={screen.run} slot={new SaveSlot(storage, screen.slot)} fresh={screen.fresh} tutorial={screen.tutorial}
+            // the intro plays once: for the first new game ever, never for a loaded save
+            intro={screen.fresh && storage?.getItem(INTRO_KEY) !== 'seen'} onIntroSeen={() => { try { storage?.setItem(INTRO_KEY, 'seen'); } catch { /* memory only */ } }}
             store={store} settings={settings} onSetting={setSetting}
             onExit={() => { setSlotsVersion((v) => v + 1); setScreen({ kind: 'menu' }); }}
             // travelling: the slot already holds the save with the new region active; a new GameView loads it
@@ -51,6 +62,8 @@ export function App() {
 interface GameViewProps {
   slot: SaveSlot;
   fresh: boolean;
+  intro: boolean;
+  onIntroSeen(): void;
   tutorial: boolean;
   store: ProgramStore;
   settings: Settings;
@@ -60,7 +73,8 @@ interface GameViewProps {
 }
 
 /** One running game in one save slot. Saves on an interval, when the page closes, and on the way back to the menu. */
-function GameView({ slot, fresh, tutorial, store, settings, onSetting, onExit, onTravel }: GameViewProps) {
+function GameView({ slot, fresh, intro, onIntroSeen, tutorial, store, settings, onSetting, onExit, onTravel }: GameViewProps) {
+  const [introOn, setIntroOn] = useState(intro);
   const host = useRef<HTMLDivElement>(null);
   const [game, setGame] = useState<Game | null>(null);
   const [error, setError] = useState<string | null>(null);
@@ -74,13 +88,15 @@ function GameView({ slot, fresh, tutorial, store, settings, onSetting, onExit, o
     // let the loading screen paint before the (synchronous) art and terrain generation
     const timer = setTimeout(() => {
       const time = Number(new URLSearchParams(location.search).get('time')); // ?time=0.75 starts at night (for screenshots)
-      Game.create(host.current!, { dayStart: time >= 0 && time < 1 && time ? time : undefined, tutorialDone: fresh ? [] : store.tutorial, save: fresh ? null : slot.load() }).then((created) => {
+      // the intro is the sunrise: it starts at dawn and hands over a fresh morning
+      Game.create(host.current!, { dayStart: time >= 0 && time < 1 && time ? time : intro ? 0.935 : undefined, tutorialDone: fresh ? [] : store.tutorial, save: fresh ? null : slot.load() }).then((created) => {
         if (dead) return created.destroy();
         g = created;
         if (import.meta.env.DEV) Object.assign(window, { __ROOTWORKS__: created }); // debug access only in dev builds
         offs.push(created.events.on('hud', setHud));
         created.setReducedMotion(settings.reducedMotion);
         created.refreshHud();
+        if (intro) { created.playIntro(); onIntroSeen(); } // seen once it starts: skipping counts
         setGame(created);
         // write at once: a new game replaces the slot's old one, and after travelling the arrival region is saved too
         slot.write(created.save());
@@ -99,16 +115,21 @@ function GameView({ slot, fresh, tutorial, store, settings, onSetting, onExit, o
     return () => window.clearInterval(t);
   }, [game, settings.autosave, slot]);
   useEffect(() => { game?.setReducedMotion(settings.reducedMotion); }, [game, settings.reducedMotion]);
+  useEffect(() => { game?.setTheme(settings.theme); }, [game, settings.theme]);
+  // milestones go into the album with their photo
+  useEffect(() => game?.events.on('achievement', addPhoto), [game]);
   // sound effects follow what the console reports, at the player's volume
   const volume = useRef(settings.sound);
   volume.current = settings.sound;
   useEffect(() => game?.events.on('console', (e) => { const s = soundFor(e); if (s) play(s, volume.current); }), [game]);
+  useEffect(() => game?.events.on('cue', (name) => play(name, volume.current)), [game]);
 
   const showTutorial = tutorial || settings.showTutorial;
   return (
-    <div className={`app ${codeOpen ? 'code-open' : ''}`}>
+    <div className={`app ${codeOpen ? 'code-open' : ''} ${introOn ? 'intro-on' : ''}`}>
       <div ref={host} className="viewport" />
       <div className="vignette" />
+      {game && <IntroOverlay game={game} onActive={setIntroOn} />}
       {!game && <div className="loading">{error ? `Could not start: ${error}` : <><b>ROOTWORKS</b><span>Growing the valley...</span></>}</div>}
       {game && hud && (
         <div className="ui-layer">
@@ -126,7 +147,7 @@ function GameView({ slot, fresh, tutorial, store, settings, onSetting, onExit, o
       )}
       {game && hud && (
         <Suspense fallback={null}>
-          <CodePanel game={game} store={store} tutorial={hud.tutorial} showTutorial={showTutorial} skills={hud.research.nodes.filter((n) => n.state === 'done').map((n) => n.id)} robots={hud.robotNames} open={codeOpen} onToggle={() => setCodeOpen((o) => !o)} />
+          <CodePanel game={game} store={store} tutorial={hud.tutorial} showTutorial={showTutorial} skills={hud.research.nodes.filter((n) => n.state === 'done').map((n) => n.id)} robots={hud.robotNames} run={hud.run} extras={hud.unlocked.editorExtras} open={codeOpen} onToggle={() => setCodeOpen((o) => !o)} />
         </Suspense>
       )}
     </div>

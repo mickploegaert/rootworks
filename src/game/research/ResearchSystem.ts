@@ -1,6 +1,7 @@
 import { Emitter } from '../core/Emitter.ts';
 import type { Machine } from '../entities/Machine.ts';
 import { RESEARCH, researchById, type Firmware, type ResearchNode } from './ResearchDefs.ts';
+import { laneBonus } from './Lanes.ts';
 
 /** Seconds a Lab needs to turn one Research Kit into Sparks. */
 export const KIT_SECONDS = 4;
@@ -58,8 +59,9 @@ export class ResearchSystem {
       t += dt;
       if (t >= KIT_SECONDS) {
         t = -1;
-        this.sparks += SPARKS_PER_KIT;
-        this.events.emit('sparked', SPARKS_PER_KIT);
+        const n = laneBonus('logic', this.completed) ? SPARKS_PER_KIT + 1 : SPARKS_PER_KIT; // Memory & logic milestone
+        this.sparks += n;
+        this.events.emit('sparked', n);
       }
       this.labTimers.set(lab, t);
       lab.progress = Math.max(0, t); // shown as the lab's activity

@@ -1,3 +1,4 @@
+import { BlossomBranch } from './Blossom.tsx';
 import { useState, type ReactElement } from 'react';
 import type { RegionView } from '../game/Game.ts';
 import type { RegionId } from '../game/world/regions.ts';
@@ -106,6 +107,7 @@ export function WorldMap({ regions, onTravel, onClose }: Props) {
     <div className="map-veil" role="dialog" aria-label="World map" onKeyDown={(e) => e.key === 'Escape' && onClose()}>
       <section className="panel world-map">
         <header className="row">
+          <BlossomBranch className="orn-head" length={130} seed={8} side="up" />
           <h2>World map</h2>
           <span className="muted">One region is loaded at a time. Your robots in other regions wait, paused, until you return.</span>
           <button type="button" className="icon" onClick={onClose} aria-label="Close the map" autoFocus>close</button>
@@ -124,7 +126,7 @@ export function WorldMap({ regions, onTravel, onClose }: Props) {
             {/* routes from where you are to the places you can go */}
             {regions.filter((r) => r.id !== active.id && r.state !== 'future').map((r) => {
               const b = pos(r);
-              return <path key={r.id} d={`M${a.x} ${a.y} Q ${(a.x + b.x) / 2} ${(a.y + b.y) / 2 - 60} ${b.x} ${b.y}`} stroke={r.lock ? '#a38a6a' : '#ffcf6e'} strokeWidth="3" strokeDasharray="2 10" strokeLinecap="round" fill="none" opacity=".8" className="wm-route" />;
+              return <path key={r.id} d={`M${a.x} ${a.y} Q ${(a.x + b.x) / 2} ${(a.y + b.y) / 2 - 60} ${b.x} ${b.y}`} stroke={r.lock ? '#8e787e' : '#f0a3bf'} strokeWidth="3" strokeDasharray="2 10" strokeLinecap="round" fill="none" opacity=".8" className="wm-route" />;
             })}
             {regions.map((r, i) => {
               const { x, y } = pos(r);
@@ -138,9 +140,9 @@ export function WorldMap({ regions, onTravel, onClose }: Props) {
                     {regionArt(r.map.art, x, y)}
                   </g>
                   {dim && <ellipse cx={x} cy={y} rx="110" ry="70" fill="url(#wm-fog)" className="wm-fog" />}
-                  {r.state === 'active' && <ellipse cx={x} cy={y + 4} rx="120" ry="78" fill="none" stroke="#ffcf6e" strokeWidth="3" className="wm-pulse" />}
+                  {r.state === 'active' && <ellipse cx={x} cy={y + 4} rx="120" ry="78" fill="none" stroke="#f0a3bf" strokeWidth="3" className="wm-pulse" />}
                   <g transform={`translate(${x} ${y + 74})`}>
-                    <rect x={-r.name.length * 4.6 - 14} y="-13" width={r.name.length * 9.2 + 28} height="26" rx="3" fill="#2b1e17" stroke={r.state === 'active' ? '#ffcf6e' : '#6e4c33'} strokeWidth="2" />
+                    <rect x={-r.name.length * 4.6 - 14} y="-13" width={r.name.length * 9.2 + 28} height="26" rx="3" fill="#2a1c21" stroke={r.state === 'active' ? '#f0a3bf' : '#5e414a'} strokeWidth="2" />
                     <text textAnchor="middle" y="5" fill={dim ? '#c2a98b' : '#f4e8d2'} fontSize="15" fontWeight="700">{r.name}</text>
                     {dim && (
                       <g transform={`translate(${-r.name.length * 4.6 - 26} -9)`} aria-hidden>
@@ -152,7 +154,7 @@ export function WorldMap({ regions, onTravel, onClose }: Props) {
                   {r.state === 'active' && (
                     <g transform={`translate(${x + 70} ${y - 52})`} className="wm-flag">
                       <rect x="-1.5" y="0" width="3" height="34" fill="#4a2c1c" />
-                      <path d="M1.5 1 L28 8 L1.5 15 Z" fill="#ffcf6e" stroke="#4a2c1c" />
+                      <path d="M1.5 1 L28 8 L1.5 15 Z" fill="#f0a3bf" stroke="#4a1c2e" />
                     </g>
                   )}
                 </g>

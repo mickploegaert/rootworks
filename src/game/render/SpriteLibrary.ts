@@ -2,7 +2,7 @@ import { Texture, TextureSource } from 'pixi.js';
 import { PixelCanvas, swayFrames } from './pixel/PixelCanvas.ts';
 import * as nature from './sprites/nature.ts';
 import * as bld from './sprites/buildings.ts';
-import { ROBOT_POSES, SPROUT_STAGES, robotFrame, type RobotPose } from './sprites/robot.ts';
+import { COSMETIC_IDS, ROBOT_POSES, SPROUT_STAGES, cosmeticCanvas, robotFrame, type RobotPose } from './sprites/robot.ts';
 import { itemIcon } from './sprites/items.ts';
 import { RESOURCE_IDS, type ResourceId } from '../resources/ResourceDefs.ts';
 import { butterflyTexture, cloudTexture, glintTexture, moteTexture, smokeTexture, glowTexture } from './sprites/fx.ts';
@@ -27,6 +27,8 @@ const toTexture = (pc: PixelCanvas): Texture => Texture.from(pc.toCanvas());
 
 const BUILDERS: Record<string, () => Built> = {
   oak_0: () => nature.oak(0), oak_1: () => nature.oak(1), oak_2: () => nature.oak(2),
+  heart_0: () => nature.heartTree(0), heart_1: () => nature.heartTree(1), heart_2: () => nature.heartTree(2),
+  heart_3: () => nature.heartTree(3), heart_4: () => nature.heartTree(4), heart_5: () => nature.heartTree(5),
   maple_0: nature.maple, cherry_0: nature.cherry, willow_0: nature.willow, giant_tree: nature.giantTree,
   birch_0: () => nature.birch(0), birch_1: () => nature.birch(1),
   pine_0: () => nature.pine(0), pine_1: () => nature.pine(1),
@@ -63,6 +65,8 @@ export class SpriteLibrary {
   private readonly thumbs = new Map<string, string>();
   /** Item icons, the same pixels the UI shows. */
   readonly items = new Map<ResourceId, Texture>();
+  /** Seedling's accessories, per facing (key "goggles_1"). */
+  readonly cosmetics = new Map<string, Texture>();
   readonly smoke: Texture;
   readonly glint: Texture;
   readonly mote: Texture;
@@ -79,6 +83,7 @@ export class SpriteLibrary {
       this.register(robotSprite(f, pose, st), { ...frames[0], frames: frames.slice(1).map((b) => b.pc) });
     }
     for (const id of RESOURCE_IDS) this.items.set(id, toTexture(itemIcon(id)));
+    for (const id of COSMETIC_IDS) for (let f = 0; f < 4; f++) this.cosmetics.set(`${id}_${f}`, toTexture(cosmeticCanvas(id, f)));
     this.smoke = toTexture(smokeTexture());
     this.glint = toTexture(glintTexture(0xffe8b0));
     this.mote = toTexture(moteTexture(0xfff2b8));

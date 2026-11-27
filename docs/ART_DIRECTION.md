@@ -61,3 +61,6 @@ The world is pixel art; the interface is a calm, modern game UI laid over it. Al
 - Layout: top bar (identity + navigation left, storage right) at one height; left column = commissions and the robot;
   inspector and build menu always stay inside the free map area, also with the editor open and at 1280 x 720.
 - Icons: item art from `sprites/items.ts`, the Spark as an SVG; no emoji.
+- Blossom workshop: cherry blossom (`--blossom`) is the second accent, for what lives and runs: the Run button, the
+  line being executed, a finished program (falling petals), a learned skill. Honey stays focus and the main choice;
+  sage stays "done". Blossom art lives in `sprites/blossom.ts` (branch ornament, flower icon).

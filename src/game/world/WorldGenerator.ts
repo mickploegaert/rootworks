@@ -1,4 +1,5 @@
 import { fbm, hash2, makeRng, vnoise } from '../core/noise.ts';
+import { Machine } from '../entities/Machine.ts';
 import { Prop } from '../entities/Prop.ts';
 import { Robot } from '../entities/Robot.ts';
 import { ResourceNode } from '../entities/ResourceNode.ts';
@@ -14,6 +15,8 @@ const C = MAP_SIZE / 2;
 export const YARD = { x0: 124, y0: 124, x1: 132, y1: 133 };
 /** Where the camera starts. */
 export const START_TILE = { x: 129, y: 129 };
+/** Where the Heart Tree stands (its 2 x 2 footprint's corner). */
+export const HEART_TILE = { x: 120, y: 129 };
 /** Fixed spots the tutorial programs refer to. */
 export const TUTORIAL = { pile: { x: 129, y: 128 }, nextToPile: { x: 129, y: 129 } };
 /**
@@ -224,6 +227,12 @@ export function generateWorld(seed: number, entities: EntityManager, bounds = VA
   for (const e of [...entities.list()]) {
     if (e instanceof Prop && e.category === 'vegetation' && world.get(e.tileX, e.tileY) === TileType.Sand && !/^(reeds|pebbles|sticks|log)/.test(e.spriteId)) entities.remove(e);
   }
+  // the Heart Tree, west of the yard: placed last, clearing what grew there, so the rest of the valley stays as it was
+  const H = HEART_TILE;
+  for (const e of [...entities.list()]) {
+    if (e.kind !== 'robot' && e.tileX + e.width > H.x - 1 && e.tileX < H.x + 3 && e.tileY + e.depth > H.y - 1 && e.tileY < H.y + 3) entities.remove(e);
+  }
+  entities.add(new Machine(H.x, H.y, 'heart_0', 'heart', 'Heart Tree', 'The old cherry the station was built around. It has slept as long as the station.', 2, 2));
   return world;
 }
 

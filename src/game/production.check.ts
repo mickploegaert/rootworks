@@ -13,6 +13,7 @@ import { ProgramRunner } from './scripting/ProgramRunner.ts';
 import { ScriptError } from './scripting/types.ts';
 import { Simulation } from './Simulation.ts';
 import { applyProgress, captureProgress } from './save/GameSave.ts';
+import { ChallengeBoard, dailyOrder } from './progress/Challenges.ts';
 import { TileType, World } from './world/World.ts';
 import { isAdjacent } from './world/Pathfinder.ts';
 
@@ -231,7 +232,7 @@ const ticks = (sim: Simulation, seconds: number) => { for (let i = 0; i < second
   const { sim, robot, storage } = field();
   for (const id of ['speed1', 'speed2', 'cargo', 'cargo2', 'yield1']) sim.research.completed.add(id);
   sim.applySkills(robot);
-  assert.equal(robot.inventory.capacity, 22);
+  assert.equal(robot.inventory.capacity, 24, 'Cargo II (22) plus the Robot upgrades milestone (+2: Speed I, Speed II, Sharp tools)');
   assert.ok(Math.abs(robot.speed - 2.2 * 1.4) < 1e-9, 'two speed tiers');
   assert.equal(robot.yieldBonus, 1);
   // the Feeder fills a machine next to storage by itself
@@ -263,4 +264,131 @@ const ticks = (sim: Simulation, seconds: number) => { for (let i = 0; i < second
   assert.match(err, /needs the Logistics skill/);
   assert.throws(() => LANGUAGES.python.compile('xs = [1, 2]', { guided: true, skills: new Set(['counter']) }), /Lists \(\[\.\.\.\]\) need the Lists skill/);
 }
+
+// ---------------------------------------------------------------- challenges, today's order, dictionaries from the game
+{
+  const board = new ChallengeBoard();
+  let got = board.evaluate({ delivered: 25, byItem: {}, lines: 6, robots: 1, seconds: 30 });
+  assert.deepEqual(got.map((g) => [g.c.id, g.stars]), [['compact', 2]], 'compact counts once 20 items are in; sprint waits for a full minute');
+  got = board.evaluate({ delivered: 40, byItem: {}, lines: 4, robots: 1, seconds: 60 });
+  assert.deepEqual(got.map((g) => [g.c.id, g.gained]), [['sprint', 3], ['compact', 1]], '40/min is gold; 4 lines adds the third compact star');
+  assert.equal(board.best.get('compact'), 4);
+  const o = dailyOrder('2026-11-27');
+  assert.deepEqual(dailyOrder('2026-11-27'), o, 'the same order all day');
+  assert.equal(board.deliver(o.item === 'wood' ? 'scrap' : 'wood', 99, o.day), false, 'other items do not count');
+  assert.equal(board.deliver(o.item, o.amount - 1, o.day), false);
+  assert.equal(board.deliver(o.item, 1, o.day), true, 'the last unit completes it');
+  assert.equal(board.deliver(o.item, 5, o.day), false, 'only once');
+  assert.equal(board.deliver(o.item, 5, '2026-11-28'), false, 'a new day starts a new order');
+  assert.equal(board.daily.day, '2026-11-28');
+
+  const { sim, robot, storage } = field();
+  storage.inventory.add('wood', 7);
+  const out: string[] = [];
+  const host = { functions: createHostFunctions(new RobotCommands(sim, robot), { action() {}, result() {} }, () => null), print: (t: string) => out.push(t) };
+  const runner = new ProgramRunner(LANGUAGES.python.compile('print(get_stock()["wood"])\nprint(recipe("sawmill")["makes"]["planks"])'), host);
+  for (let i = 0; i < 10 && runner.isActive; i++) runner.tick();
+  assert.deepEqual(out, ['7', '3']);
+}
+
+// ---------------------------------------------------------------- milestones and the wardrobe survive a save
+{
+  const { sim } = field();
+  assert.equal(sim.achievements.unlock('skills5')?.cosmetic, 'goggles');
+  assert.equal(sim.achievements.unlock('skills5'), null, 'once');
+  sim.achievements.delivered = 42; sim.achievements.cosmetic = 'goggles';
+  const p = captureProgress(sim), { sim: b } = field();
+  applyProgress(b, { ...p, achievements: { ...p.achievements!, done: [...p.achievements!.done] } });
+  assert.deepEqual([...b.achievements.done], ['skills5']);
+  assert.equal(b.achievements.delivered, 42);
+  assert.equal(b.achievements.cosmetic, 'goggles');
+  const { sim: c } = field();
+  applyProgress(c, { ...p, achievements: { done: [], delivered: 0, cosmetic: 'crown' } });
+  assert.equal(c.achievements.cosmetic, null, 'an accessory that was not earned is not worn');
+}
+
+// ---------------------------------------------------------------- player buildings can be moved and taken down; the world's own cannot
+{
+  const { sim, storage } = field();
+  storage.inventory.add('scrap', 6);
+  assert.equal(sim.building.place('workbench', 0, 5, 3), null);
+  const site = sim.entities.at(5, 3)!;
+  assert.ok(sim.playerBuilding(site));
+  assert.equal(sim.demolish(site), null);
+  assert.equal(storage.inventory.get('scrap'), 6, 'an unfinished site returns everything');
+  sim.building.place('workbench', 0, 5, 3);
+  ticks(sim, 5);
+  const bench = sim.entities.at(5, 3) as Machine;
+  bench.input.add('wood', 2);
+  assert.equal(sim.move(bench, 9, 3), null);
+  assert.equal(sim.entities.at(5, 3), undefined, 'old spot is free');
+  assert.equal(sim.entities.at(10, 4), bench, 'same machine, new spot, contents kept');
+  assert.equal(bench.input.get('wood'), 2);
+  assert.match(sim.move(bench, 15, 3)!, /Off the edge/);
+  assert.equal(sim.entities.at(9, 3), bench, 'a refused move changes nothing');
+  const before = storage.inventory.get('scrap'); // the Workbench commission paid out meanwhile
+  assert.equal(sim.demolish(bench), null);
+  assert.equal(storage.inventory.get('scrap') - before, 3, 'a finished building returns half');
+  assert.equal(storage.inventory.get('wood'), 2, 'and what it held');
+  assert.equal(sim.demolish(storage), 'Only buildings you built can be taken down');
+  const gen = Simulation.generate(1337);
+  const workshop = [...gen.entities.list()].find((e) => e.spriteId === 'lab')!;
+  assert.equal(gen.playerBuilding(workshop), null, 'the generated workshop is not yours to sell');
+}
+
+// ---------------------------------------------------------------- lane milestones: three skills in a lane earn its bonus
+{
+  const { sim, robot } = field();
+  const lab = new Machine(9, 3, 'lab_building', 'lab', 'Research Lab', '', 2, 2);
+  sim.entities.add(lab);
+  for (const id of ['counter', 'operators']) sim.research.completed.add(id);
+  sim.research.sparks = 0; lab.input.add('research_kit', 1);
+  ticks(sim, 5);
+  assert.equal(sim.research.sparks, 2, 'two logic skills: no bonus yet');
+  sim.research.completed.add('sense'); sim.research.sparks = 0; lab.input.add('research_kit', 1);
+  ticks(sim, 5);
+  assert.equal(sim.research.sparks, 3, 'Memory & logic milestone: 3 Sparks per kit');
+  sim.research.completed.add('loop'); sim.research.completed.add('functions');
+  sim.applySkills(robot);
+  assert.equal(robot.harvestSpeed, 1.15, 'Control flow has two skills: both earn its bonus');
+}
 console.log('production ok');
+
+// ---------------------------------------------------------------- the story: chapters advance, the Heart Tree takes offerings by program
+{
+  const { sim, robot, storage, api } = field();
+  const heart = new Machine(8, 2, 'heart_0', 'heart', 'Heart Tree', '', 2, 2);
+  sim.entities.add(heart);
+  sim.research.sparks = 0;
+  assert.equal(sim.story.chapter, 0);
+  robot.inventory.add('planks', 5);
+  const early = run(sim, api.goTo('heart'));
+  assert.ok(early.ok);
+  assert.equal(run(sim, api.put('planks')).ok, false, 'a sleeping tree takes no offerings');
+  // chapter 1: deliveries, Loops, a Workbench
+  sim.achievements.delivered = 30; sim.research.completed.add('loop');
+  sim.entities.add(new Machine(12, 8, 'workbench', 'workbench', 'Workbench', '', 2, 2));
+  ticks(sim, 1);
+  assert.equal(sim.story.chapter, 1, 'chapter 1 done');
+  assert.equal(heart.stage, 1, 'the tree buds');
+  assert.ok(sim.research.sparks >= 4, 'the chapter pays Sparks');
+  assert.equal(sim.storyEvents.length, 1);
+  // jump to the festival: offerings now go into the tree and count
+  sim.story.chapter = 4; ticks(sim, 1);
+  assert.ok(run(sim, api.put('planks')).ok, 'the festival tree takes planks');
+  ticks(sim, 1);
+  assert.equal(sim.story.offered.planks, 5);
+  assert.equal(heart.input.total, 0, 'offerings are taken in');
+  // the save keeps it
+  const p = captureProgress(sim);
+  const { sim: again } = field();
+  applyProgress(again, p);
+  assert.equal(again.story.chapter, 4); assert.equal(again.story.offered.planks, 5);
+  // the festival finishes into Eternal Spring, where the tree pays Sparks every minute
+  sim.story.offered = { planks: 100, bricks: 60, research_kit: 30 }; ticks(sim, 1);
+  assert.ok(sim.story.eternal);
+  const before = sim.research.sparks; ticks(sim, 63);
+  assert.equal(sim.research.sparks - before, 1, 'Eternal Spring pays a Spark a minute');
+  void storage;
+}
+console.log('story ok');

@@ -12,7 +12,8 @@ import { RESOURCES, type ResourceId } from '../resources/ResourceDefs.ts';
 import { RobotState } from '../robot/RobotState.ts';
 import type { World } from '../world/World.ts';
 import { robotSprite, type SpriteAsset, type SpriteLibrary } from './SpriteLibrary.ts';
-import { BASKET, type RobotPose } from './sprites/robot.ts';
+import { BASKET, robotHead, type CosmeticId, type RobotPose } from './sprites/robot.ts';
+import { ROBOT_COLORS } from '../robotColors.ts';
 
 interface Particle { s: Sprite; vx: number; vy: number; age: number; life: number; gravity: number }
 interface Smoke { x: number; y: number; rate: number; puffs: { s: Sprite; age: number; life: number }[]; timer: number }
@@ -28,6 +29,12 @@ interface View {
   glints: { s: Sprite; ph: number; period: number }[];
   frame: number;
   depleted: boolean;
+  /** Robots: seconds spent idle (a long wait and it sits down), a sigh to puff, and its colour ring. */
+  idleFor?: number;
+  sigh?: boolean;
+  ring?: Graphics;
+  /** The Heart Tree's bloom stage this view shows; a new stage rebuilds the view. */
+  stage?: number;
   /** Displayed elevation in px (robots ease between levels). */
   lift: number;
   /** Robots: time until which the robot shows its error reaction, and the cargo icon floating above it. */
@@ -35,6 +42,8 @@ interface View {
   /** Robots: time until which the robot celebrates a delivery. */
   cheerUntil?: number;
   cargo?: Sprite;
+  /** Robots: the accessory they wear. */
+  hat?: Sprite;
   /** Robots: speech bubble with the current line of code (or an error), and the text it shows. */
   bubble?: { root: Container; bg: Graphics; text: Text; shown: string };
   /** Machines: a status lamp (green working, amber waiting for inputs, red output full). */
@@ -58,9 +67,14 @@ export class EntityRenderer {
   readonly fx = new Container();
   /** Sprout growth on the robots' heads: the firmware tier. */
   robotStage = 0;
+  /** What the robots wear (an earned accessory), or null. */
+  cosmetic: CosmeticId | null = null;
   private time = 0;
   private readonly views = new Map<number, View>();
   private readonly particles: Particle[] = [];
+  /** The intro's hold on Seedling: a forced pose, how powered-down it looks (0..1), and the glow of its sprout. */
+  readonly cinematic: { pose: RobotPose | null; dim: number; glow: number } = { pose: null, dim: 0, glow: 0 };
+  private sproutGlow?: Sprite;
 
   /** Chunk keys currently on screen: only their entities (plus robots) have sprites. */
   private visibleChunks = new Set<number>();
@@ -102,11 +116,12 @@ export class EntityRenderer {
 
   private add(e: Entity): void {
     const isRobot = e instanceof Robot;
-    const asset = isRobot ? this.lib.get(robotSprite(1, 'idle', 0)) : this.lib.get(e.spriteId);
+    const heart = e instanceof Machine && e.machineId === 'heart';
+    const asset = isRobot ? this.lib.get(robotSprite(1, 'idle', 0)) : this.lib.get(heart ? `heart_${e.stage}` : e.spriteId);
     const body = new Sprite(asset.frames[0]);
     body.anchor.set(asset.anchorX, asset.anchorY);
     this.bodies.addChild(body);
-    const v: View = { entity: e, body, asset: isRobot ? undefined : asset, glows: [], glints: [], frame: -1, depleted: false, lift: 0, fxTimer: 0 };
+    const v: View = { entity: e, body, asset: isRobot ? undefined : asset, glows: [], glints: [], frame: -1, depleted: false, lift: 0, fxTimer: 0, stage: heart ? e.stage : undefined };
     if (asset.shadow) {
       v.shadow = new Sprite(asset.shadow);
       v.shadow.anchor.set(asset.anchorX, asset.anchorY);
@@ -125,7 +140,7 @@ export class EntityRenderer {
         v.drone.anchor.set(0.5); v.drone.tint = 0xffe8b0; v.drone.blendMode = 'add';
         this.fx.addChild(v.drone);
       } else this.attachFx(v, base, e);
-      if (e instanceof Machine) {
+      if (e instanceof Machine && !heart) {
         v.lamp = new Sprite(Texture.WHITE);
         v.lamp.width = v.lamp.height = 5; v.lamp.anchor.set(0.5);
         const pc = asset.source; // sit just above the building's highest painted pixel, not the canvas padding
@@ -178,7 +193,7 @@ export class EntityRenderer {
     const v = this.views.get(e.id);
     if (!v) return;
     this.detachFx(v);
-    v.body.destroy(); v.shadow?.destroy(); v.drone?.destroy(); v.lamp?.destroy(); v.cargo?.destroy(); v.piles?.sprites.forEach((sp) => sp.destroy()); v.bubble?.root.destroy({ children: true });
+    v.body.destroy(); v.shadow?.destroy(); v.drone?.destroy(); v.lamp?.destroy(); v.ring?.destroy(); v.cargo?.destroy(); v.hat?.destroy(); v.piles?.sprites.forEach((sp) => sp.destroy()); v.bubble?.root.destroy({ children: true });
     this.views.delete(e.id);
   }
 
@@ -202,6 +217,7 @@ export class EntityRenderer {
       const e = v.entity;
       if (e instanceof Robot) { this.updateRobot(v, e, t, dt); continue; }
       if (e instanceof ResourceNode && e.depleted && !v.depleted) this.deplete(v, e);
+      if (v.stage !== undefined && e instanceof Machine && e.stage !== v.stage) { this.remove(e); this.add(e); continue; }
       const a = v.asset;
       if (a && a.frames.length > 1) {
         let f: number;
@@ -212,7 +228,7 @@ export class EntityRenderer {
         }
         if (f !== v.frame) { v.frame = f; v.body.texture = a.frames[f]; }
       }
-      const idle = e instanceof Machine && !e.working && e.machineId !== 'lab' ? 0.2 : 1; // a cold kiln barely glows
+      const idle = e instanceof Machine && !e.working && e.machineId !== 'lab' && e.machineId !== 'heart' ? 0.2 : 1; // a cold kiln barely glows
       for (const g of v.glows) g.s.alpha = idle * Math.min(1, g.alpha * lampBoost) * (1 + g.flicker * (Math.sin(t * 9 + g.ph) * 0.6 + Math.sin(t * 23 + g.ph * 2) * 0.4));
       if (v.lamp && e instanceof Machine) {
         const r = e.recipe, full = !!r && e.progress >= r.time;
@@ -237,15 +253,19 @@ export class EntityRenderer {
     if (v.upsetUntil === undefined) { // first frame: react to failed commands (not to Stop)
       v.upsetUntil = 0;
       r.queue.events.on('finished', (res) => {
-        if (!res.ok && res.error !== 'stopped') v.upsetUntil = this.time + 1.6;
+        if (!res.ok && res.error !== 'stopped') { v.upsetUntil = this.time + 1.6; v.sigh = true; }
         if (res.ok && res.action === 'deposit()') v.cheerUntil = this.time + 1.1; // a little hop after every delivery
       });
     }
     this.time = t;
-    const pose: RobotPose = v.upsetUntil > t ? 'error' : (v.cheerUntil ?? 0) > t ? 'celebrate' : moving ? 'walk' : r.state === RobotState.Harvesting || r.state === RobotState.Depositing ? 'work' : 'idle';
-    const fps = { idle: 3, walk: 9, work: 7, celebrate: 8, error: 6 }[pose];
+    let pose: RobotPose = this.cinematic.pose ?? (v.upsetUntil > t ? 'error' : (v.cheerUntil ?? 0) > t ? 'celebrate' : moving ? 'walk' : r.state === RobotState.Harvesting || r.state === RobotState.Depositing ? 'work' : 'idle');
+    v.idleFor = pose === 'idle' && !this.cinematic.pose ? (v.idleFor ?? 0) + dt : 0;
+    if (v.idleFor > 14) pose = 'rest'; // nothing to do for a while: it sits down and looks about
+    const fps = { idle: 3, walk: 9, work: 7, celebrate: 8, error: 6, sleep: 0.6, rest: 0.7 }[pose];
     const asset = this.lib.get(robotSprite(r.facing, pose, this.robotStage));
-    const tex = asset.frames[Math.floor(t * fps) % asset.frames.length];
+    let frameIdx = Math.floor(t * fps) % asset.frames.length;
+    if (pose === 'idle' && frameIdx === 5 && hash2(Math.floor(t * fps / 6), r.id, 7) < 0.55) frameIdx = 0; // blinks now and then, not like clockwork
+    const tex = asset.frames[frameIdx];
     if (v.body.texture !== tex) { v.body.texture = tex; v.shadow!.texture = asset.shadow!; }
     // ease elevation so steps up/down are a smooth climb rather than a jump
     const target = this.world.heightAt(Math.floor(r.posX), Math.floor(r.posY)) * HEIGHT_UNIT;
@@ -255,8 +275,49 @@ export class EntityRenderer {
     v.body.position.set(x, y); // the frames carry the bob
     v.shadow!.position.set(x, y);
     v.body.zIndex = depthOf(r.posX, r.posY) + 1;
+    if (v.sigh) { // a failed command: a small grey puff above its head
+      v.sigh = false;
+      const head = robotHead(r.facing, pose, frameIdx);
+      for (let i = 0; i < 3; i++) {
+        const p = this.spawn(x + head.x + 6 + i * 2, y + head.y - 10, 0xd8d0c8);
+        p.s.width = p.s.height = 3 - (i === 1 ? 0 : 1); p.vx = 8 + i * 4; p.vy = -14 - i * 6; p.gravity = 0; p.life = 0.9;
+      }
+    }
+    // with more than one robot, each stands on a faint ring in its own colour (its program tab's colour)
+    const robots = this.entities.ofKind('robot');
+    if (robots.length > 1) {
+      if (!v.ring) {
+        const c = ROBOT_COLORS[Math.max(0, robots.indexOf(r)) % ROBOT_COLORS.length];
+        v.ring = new Graphics().ellipse(0, 0, 13, 6).stroke({ color: c, width: 1.5, alpha: 0.75 });
+        this.shadows.addChild(v.ring);
+      }
+      v.ring.position.set(x + 2, y + 1);
+    }
+    const cin = this.cinematic;
+    if (cin.dim || v.body.tint !== 0xffffff) { // powered down: a cool, dark body that warms as it wakes
+      const k = Math.max(0, Math.min(1, cin.dim)), ch = (a: number) => Math.round(255 - (255 - a) * k);
+      v.body.tint = (ch(104) << 16) | (ch(100) << 8) | ch(140);
+    }
+    if (cin.glow > 0 && !this.sproutGlow) { this.sproutGlow = new Sprite(this.lib.glowTexture(16, 0xb8f5a0)); this.sproutGlow.anchor.set(0.5); this.sproutGlow.blendMode = 'add'; this.fx.addChild(this.sproutGlow); }
+    if (this.sproutGlow) {
+      const head = robotHead(r.facing, pose, frameIdx);
+      this.sproutGlow.position.set(x + head.x, y + head.y - 12);
+      this.sproutGlow.alpha = Math.max(0, cin.glow) * (0.85 + Math.sin(t * 3) * 0.15);
+      this.sproutGlow.visible = cin.glow > 0;
+    }
 
     this.updateBubble(v, r, x, y, t);
+    // the accessory follows the head of this exact frame, so it never floats or lags
+    if (this.cosmetic && !v.hat) { v.hat = new Sprite(); v.hat.anchor.set(0.5); this.bodies.addChild(v.hat); }
+    if (v.hat) {
+      v.hat.visible = !!this.cosmetic;
+      if (this.cosmetic) {
+        const head = robotHead(r.facing, pose, frameIdx);
+        v.hat.texture = this.lib.cosmetics.get(`${this.cosmetic}_${r.facing}`)!;
+        v.hat.position.set(x + head.x, y + head.y);
+        v.hat.zIndex = v.body.zIndex + 0.03;
+      }
+    }
 
     // what the robot carries floats above its head, so cargo is visible in the world, not only in a panel
     const [carried] = r.inventory.entries().sort((a, b) => b[1] - a[1])[0] ?? [];
@@ -267,7 +328,8 @@ export class EntityRenderer {
         v.cargo.texture = this.lib.items.get(carried as ResourceId)!;
         // it rides in the wicker basket on the robot's back: behind the body when the robot faces us
         const [bx, by] = BASKET[r.facing];
-        v.cargo.position.set(x + bx, y + by + 1);
+        const full = r.inventory.total >= r.inventory.capacity;
+        v.cargo.position.set(x + bx, y + by + 1 - (full ? Math.round(Math.abs(Math.sin(t * 7)) * 1.5) : 0)); // a full basket jiggles
         v.cargo.zIndex = v.body.zIndex + (r.facing >= 2 ? 0.01 : -0.01);
       }
     }
@@ -332,12 +394,30 @@ export class EntityRenderer {
       b.text.style.fill = r.bubble!.error ? 0xffd6c8 : 0xf4e8d2;
       const w = Math.ceil(b.text.width) + 10, h = 15;
       b.bg.clear()
-        .roundRect(-w / 2, -h, w, h, 3).fill({ color: r.bubble!.error ? 0x7a2a20 : 0x2b1e16, alpha: 0.92 }).stroke({ color: r.bubble!.error ? 0xff705a : 0xa8764a, width: 1 })
+        .rect(-w / 2, -h, w, h).fill({ color: r.bubble!.error ? 0x7a2a20 : 0x2b1e16, alpha: 0.92 }).stroke({ color: r.bubble!.error ? 0xff705a : ROBOT_COLORS[Math.max(0, this.entities.ofKind('robot').indexOf(r)) % ROBOT_COLORS.length], width: 1 })
         .poly([-3, 0, 3, 0, 0, 4]).fill({ color: r.bubble!.error ? 0x7a2a20 : 0x2b1e16, alpha: 0.92 });
       b.text.position.set(-w / 2 + 5, -h + 2);
     }
     const lift = this.robotStage >= 2 ? 6 : 0;
     b.root.position.set(x, y - 72 - lift + (r.bubble!.error ? Math.round(Math.sin(t * 20)) : 0));
+  }
+
+  /** Every robot cheers for a while (a chapter of the story finished). */
+  cheer(seconds: number): void {
+    for (const v of this.views.values()) if (v.entity instanceof Robot) v.cheerUntil = this.time + seconds;
+  }
+
+  /** The intro's first spark: a soft flash over a tile and sparks flying up from it. */
+  flash(tileX: number, tileY: number, color: number): void {
+    const p = tileToWorld(tileX, tileY), y = p.y - this.world.heightAt(tileX, tileY) * HEIGHT_UNIT - 14;
+    const g = new Sprite(this.lib.glowTexture(40, color));
+    g.anchor.set(0.5); g.blendMode = 'add'; g.position.set(p.x, y);
+    this.fx.addChild(g);
+    this.particles.push({ s: g, vx: 0, vy: 0, age: 0, life: 1.8, gravity: 0 });
+    for (let i = 0; i < 26; i++) {
+      const s = this.spawn(p.x + (Math.random() - 0.5) * 10, y, i % 3 ? color : 0xffffff);
+      s.vx = (Math.random() - 0.5) * 90; s.vy = -50 - Math.random() * 90; s.life = 0.7 + Math.random() * 0.8; s.gravity = 120;
+    }
   }
 
   private spawn(x: number, y: number, color: number): Particle {

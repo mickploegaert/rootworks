@@ -1,4 +1,5 @@
 import { RobotCommands } from '../api/RobotCommands.ts';
+import type { CosmeticId } from '../render/sprites/robot.ts';
 import { Camera } from '../camera/Camera.ts';
 import { TILE_H, TILE_W, tileToWorld } from '../core/iso.ts';
 import { EntityManager } from '../entities/EntityManager.ts';
@@ -35,11 +36,14 @@ export class MenuScene {
         { stepsPerTick: 200, idleStepLimit: 100_000, maxSteps: Number.MAX_SAFE_INTEGER }));
   }
 
-  static async create(host: HTMLElement, reducedMotion: boolean): Promise<MenuScene> {
+  /** `look`: how far the player's Seedling has grown, and what it wears (from the latest save). */
+  static async create(host: HTMLElement, reducedMotion: boolean, look: { sprout: number; cosmetic: CosmeticId | null } = { sprout: 0, cosmetic: null }): Promise<MenuScene> {
     const s = new MenuScene(reducedMotion);
     s.frameCamera(host.clientWidth);
     await s.renderer.init(host, s.sim.entities, s.camera);
     s.renderer.setAmbient(!reducedMotion);
+    s.renderer.setRobotStage(look.sprout);
+    s.renderer.setCosmetic(look.cosmetic);
     // let the works warm up so machines are already turning when the menu appears
     for (let i = 0; i < 60 * 8; i++) s.step();
     s.renderer.onTick((dt) => s.frame(dt));

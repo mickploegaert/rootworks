@@ -1,4 +1,5 @@
-import { Application, Container, Graphics, Sprite, Texture } from 'pixi.js';
+import { Application, Container, Graphics, Rectangle, Sprite, Texture } from 'pixi.js';
+import type { CosmeticId } from './sprites/robot.ts';
 import { HEIGHT_UNIT, tileToWorld, uvToWorld } from '../core/iso.ts';
 import { PARCEL } from '../world/World.ts';
 import type { Camera } from '../camera/Camera.ts';
@@ -152,9 +153,26 @@ export class Renderer {
   setAmbient(on: boolean): void { this.ambient.top.visible = this.ambient.ground.visible = on; }
 
   /** A small preview image of a sprite, for menus. */
+  /** The intro's hold on Seedling and its first spark (see EntityRenderer). */
+  get cinematic() { return this.entityRenderer.cinematic; }
+  /** The intro hides the land-claim outlines: a film shot, not a map. */
+  showParcels(on: boolean): void { this.parcels.visible = on; }
+  flash(tileX: number, tileY: number, color: number): void { this.entityRenderer.flash(tileX, tileY, color); }
+  cheer(seconds: number): void { this.entityRenderer.cheer(seconds); }
   thumbnail(spriteId: string): string { return this.lib.thumbnail(spriteId); }
   spriteIds(): string[] { return this.lib.ids(); }
   hasSprite(id: string): boolean { return this.lib.has(id); }
+
+  /** A small JPEG of what is on screen, for the album (null if the GPU cannot read back). */
+  async snapshot(): Promise<string | null> {
+    try {
+      const { width, height } = this.app.screen;
+      return await this.app.renderer.extract.base64({ target: this.app.stage, frame: new Rectangle(0, 0, width, height), resolution: Math.min(1, 384 / width), format: 'jpg', quality: 0.75 });
+    } catch { return null; }
+  }
+
+  /** What Seedling and the other robots wear. */
+  setCosmetic(id: CosmeticId | null): void { if (this.entityRenderer) this.entityRenderer.cosmetic = id; }
 
   /** The camera's view in world space, with a margin so chunks load just before they scroll in. */
   view(camera: Camera) {

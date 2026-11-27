@@ -53,8 +53,9 @@ const PLACE_ALIASES: Record<string, string> = {
   iron: 'iron_ore', iron_ore: 'iron_ore', copper: 'copper_ore', copper_ore: 'copper_ore',
   storage: 'storage', depot: 'storage', home: 'storage',
   workbench: 'workbench', bench: 'workbench', sawmill: 'sawmill', kiln: 'kiln', lab: 'lab', research_lab: 'lab',
+  heart: 'heart', heart_tree: 'heart', cherry: 'heart',
 };
-export const PLACE_HINT = '"tree", "stone", "scrap", "iron", "copper", "storage", "workbench", "sawmill", "kiln", "lab"';
+export const PLACE_HINT = '"tree", "stone", "scrap", "iron", "copper", "storage", "workbench", "sawmill", "kiln", "lab", "heart"';
 export const placeAlias = (p: string): string | null => PLACE_ALIASES[p.trim().toLowerCase().replace(/[\s-]+/g, '_')] ?? null;
 
 
@@ -160,7 +161,7 @@ export function createHostFunctions(cmd: RobotCommands, log: HostLog, skills: ()
     const it = itemArg('take', item), amt = amountArg('take', n);
     return act(`take(${it ? `"${it}"` : ''}${amt !== undefined ? `, ${amt}` : ''})`, cmd.take(it, amt), (r) => `took ${listMoved(r)} from the ${String(r.data?.from)}`);
   }, { optional: 2, example: 'take("research_kit")' });
-  def('go_to', ['place', 'y'], 'Walk next to a place: the nearest "tree", "stone", "scrap", "iron", "copper", "storage", "workbench", "sawmill", "kiln" or "lab". Or give a tile: go_to(12, 8). Returns True on arrival.', ([p, y]) => {
+  def('go_to', ['place', 'y'], 'Walk next to a place: the nearest "tree", "stone", "scrap", "iron", "copper", "storage", "workbench", "sawmill", "kiln", "lab" or "heart" (the Heart Tree). Or give a tile: go_to(12, 8). Returns True on arrival.', ([p, y]) => {
     if (typeof p === 'number' || Array.isArray(p)) {
       const [px, py] = Array.isArray(p) ? p : [p, y];
       const tx = int('go_to', 'x', px ?? null), ty = int('go_to', 'y', py ?? null);
@@ -189,6 +190,12 @@ export function createHostFunctions(cmd: RobotCommands, log: HostLog, skills: ()
       },
     };
   }, { skill: 'logistics', optional: 1, example: 'deliver("wood", "workbench")' });
+  def('get_stock', [], 'Everything in storage as a dictionary, e.g. {"wood": 12, "scrap": 4}. Use stock["wood"] or stock.get("planks", 0).', () => cmd.stock() as HostValue, { skill: 'counter', example: 'stock = get_stock()' });
+  def('recipe', ['machine'], 'What a machine needs and makes, as a dictionary: recipe("sawmill") gives {"needs": {"wood": 2}, "makes": {"planks": 3}, "seconds": 4}.', ([m]) => {
+    const r = typeof m === 'string' ? cmd.recipe(placeAlias(m) ?? m) : null;
+    if (!r) throw new ScriptError('runtime', `recipe() needs a machine in quotes: "workbench", "sawmill" or "kiln", but got ${describe(m ?? null)}.`);
+    return r as unknown as HostValue;
+  }, { skill: 'counter', example: 'needs = recipe("sawmill")["needs"]' });
   def('get_nearby', [], 'Name of the machine or storage next to the robot ("sawmill", "storage"...), or None.', () => cmd.adjacentPlace(), { skill: 'sense' });
   return fns;
 }

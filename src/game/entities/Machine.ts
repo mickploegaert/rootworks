@@ -17,6 +17,8 @@ export class Machine extends Entity {
   progress = -1;
   /** Finished batches, for statistics and commissions. */
   batches = 0;
+  /** The Heart Tree's bloom stage, 0-5, set by the story. It takes offerings from stage 4, the festival. */
+  stage = 0;
 
   constructor(x: number, y: number, spriteId: string, readonly machineId: MachineId, name: string, description: string, w: number, d: number) {
     super(x, y, spriteId, name, description, w, d);
@@ -31,6 +33,7 @@ export class Machine extends Entity {
   /** What the input buffer accepts: the current recipe's ingredients (the Lab takes research kits). */
   accepts(id: ResourceId): boolean {
     if (this.machineId === 'lab') return id === 'research_kit';
+    if (this.machineId === 'heart') return this.stage >= 4 && (id === 'planks' || id === 'bricks' || id === 'research_kit');
     return !!this.recipe && id in this.recipe.inputs;
   }
 

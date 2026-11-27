@@ -1,5 +1,6 @@
 import type { Robot } from '../entities/Robot.ts';
 import type { ResourceAmounts } from '../inventory/Inventory.ts';
+import { MACHINES } from '../production/MachineDefs.ts';
 import { ResourceNode } from '../entities/ResourceNode.ts';
 import {
   ApproachAction, DepositAction, GoToAction, HarvestAction, MoveToAction, PutAction, ReturnToStorageAction, StepAction, TakeAction,
@@ -131,6 +132,15 @@ export class RobotCommands {
   resourceAt(x: number, y: number): string | null {
     const e = this.sim.entities.at(x, y);
     return e instanceof ResourceNode && !e.depleted ? e.resourceId : null;
+  }
+
+  /** Storage contents (the first depot). */
+  stock(): ResourceAmounts { return this.sim.storages[0]?.inventory.snapshot() ?? {}; }
+  /** A machine's current recipe as plain data, or null for unknown machines. */
+  recipe(machine: string): { needs: ResourceAmounts; makes: ResourceAmounts; seconds: number } | null {
+    const def = (MACHINES as Record<string, (typeof MACHINES)[keyof typeof MACHINES]>)[machine];
+    const r = def?.recipes[0];
+    return r ? { needs: { ...r.inputs }, makes: { ...r.outputs }, seconds: r.time } : null;
   }
 
   position(): { x: number; y: number } { return this.here(); }

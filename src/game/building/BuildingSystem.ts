@@ -37,7 +37,7 @@ export class BuildingSystem {
   }
 
   /** Why the building cannot go here, or null if it can. */
-  check(defId: string, x: number, y: number): string | null {
+  check(defId: string, x: number, y: number, free = false): string | null {
     const def = buildingById(defId);
     if (!def) return 'Unknown building';
     if (!this.isUnlocked(def)) return `Requires research: ${def.requires}`;
@@ -52,7 +52,7 @@ export class BuildingSystem {
       if (e instanceof Robot) return 'A robot is standing there';
       if (e && (e.blocking || e instanceof ResourceNode || e instanceof Machine || e instanceof ConstructionSite || (e instanceof Prop && e.category !== 'vegetation'))) return `${e.name} is in the way`;
     }
-    return this.missing(def);
+    return free ? null : this.missing(def);
   }
 
   /** Build it: pay from storage, clear plants underfoot, add the structure. Returns the error, or null on success. */

@@ -195,6 +195,50 @@ export function giantTree(): Built {
   return b;
 }
 
+/**
+ * The Heart Tree: the old cherry the research station was built around. It wakes in six stages as the valley's story
+ * advances: bare and grey, budding, first blossom, half bloom, nearly full, and full bloom with festival lanterns.
+ */
+export function heartTree(stage: number): Built {
+  const W = 240, H = 260;
+  const b = newBuilt(W, H, 120, 228), { pc } = b, seed = 410;
+  const gx = 120, gy = 228 + 16;
+  shadowEllipse(b.shadow!, gx + 34, gy + 2, 70 + stage * 5, 26, SHADOW_ALPHA);
+  const bark = stage === 0 ? P.stone : P.bark; // asleep, its bark is grey
+  roots(pc, gx, gy, 8, 42, 9, seed);
+  trunk(pc, gx, gy, gy - 110, 26, seed, bark, -3);
+  limb(pc, gx - 2, gy - 72, gx - 64, gy - 120, 11, 4, bark);
+  limb(pc, gx + 2, gy - 84, gx + 62, gy - 128, 10, 4, bark);
+  limb(pc, gx, gy - 104, gx - 6, gy - 162, 9, 3, bark);
+  limb(pc, gx - 30, gy - 96, gx - 82, gy - 104, 6, 2, bark);
+  limb(pc, gx + 30, gy - 104, gx + 88, gy - 110, 6, 2, bark);
+  const crowns: [number, number, number, number][] = [[-48, -138, 48, 32], [52, -140, 46, 30], [0, -168, 64, 40], [4, -122, 56, 24], [-80, -112, 26, 18], [86, -116, 26, 18]];
+  if (stage === 0) { // a few dry leaves cling on
+    for (let i = 0; i < 24; i++) { const [dx, dy] = crowns[i % crowns.length]; pc.set(gx + dx + ((i * 37) % 40) - 20, gy + dy + ((i * 23) % 24) - 12, pick(P.rust, 2 + (i % 3))); }
+  } else if (stage === 1) { // buds along the branches
+    for (let i = 0; i < 150; i++) { const [dx, dy, rx, ry] = crowns[i % crowns.length]; const x = gx + dx + Math.round(Math.sin(i * 2.3) * rx * 0.7), y = gy + dy + Math.round(Math.cos(i * 1.7) * ry * 0.7);
+      blob(pc, x, y, 2.2, 1.9, P.cherry.slice(1, 5), { style: 'smooth' }); }
+  } else {
+    const fill = [0, 0, 0.45, 0.7, 0.88, 1][stage];
+    crowns.forEach(([dx, dy, rx, ry], k) => canopy(pc, gx + dx, gy + dy, rx * fill, ry * fill, P.cherry, seed + k, Math.round(30 * fill), 8, 14));
+  }
+  if (stage >= 2) for (let i = 0; i < 6 + stage * 4; i++) pc.set(gx - 60 + ((i * 53) % 130), gy - 6 + ((i * 17) % 14), pick(P.cherry, 3 + (i % 2))); // fallen petals
+  const glows: { x: number; y: number; color: number; radius: number; flicker: number; alpha: number }[] = [];
+  if (stage >= 5) { // festival lanterns
+    for (const [dx, dy] of [[-56, -112], [-20, -100], [28, -106], [64, -118], [6, -136], [-84, -98], [90, -102]] as const) {
+      line(pc, gx + dx, gy + dy - 8, gx + dx, gy + dy - 2, pick(P.leaf, 1));
+      blob(pc, gx + dx, gy + dy, 2.5, 3, P.amber.slice(2), { style: 'smooth' });
+      glows.push({ x: dx, y: dy + 16, color: 0xffc8d8, radius: 16, flicker: 0.25, alpha: 0.55 });
+    }
+  }
+  if (stage >= 3) glows.push({ x: 0, y: -120, color: 0xffb8d0, radius: 60 + stage * 8, flicker: 0.05, alpha: 0.12 + stage * 0.03 }); // the tree's soft light
+  pc.edgeDarken(0.6);
+  b.sway = stage >= 2 ? 1 : 0;
+  b.shade = { dx: 26, dy: 4, rx: 90, ry: 44, strength: 0.6 };
+  b.fx = { glows };
+  return b;
+}
+
 // ---------------------------------------------------------------- undergrowth
 
 /** Russet for autumn shrubs: muted, so a bush never reads as a resource or a fire. */

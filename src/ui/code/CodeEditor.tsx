@@ -40,21 +40,22 @@ const marks = StateField.define<DecorationSet>({
 });
 
 const theme = EditorView.theme({
-  '&': { height: '100%', backgroundColor: '#18120d', color: '#f2e8d8', fontSize: 'var(--code-font, 14px)' },
+  '&': { height: '100%', backgroundColor: 'var(--editor-bg)', color: 'var(--ink)', fontSize: 'var(--code-font, 14px)' },
   '.cm-scroller': { scrollbarColor: '#6e4c33 #1c130c', fontFamily: "Consolas, 'Cascadia Mono', 'Courier New', monospace", lineHeight: '1.55' },
-  '.cm-content': { caretColor: '#f2c062', padding: '10px 0' },
-  '.cm-cursor': { borderLeftColor: '#f2c062', borderLeftWidth: '2px' },
-  '.cm-gutters': { backgroundColor: '#18120d', color: '#6e5a48', border: 'none', paddingLeft: '6px' },
-  '.cm-activeLineGutter': { backgroundColor: 'transparent', color: '#f2c062' },
-  '.cm-activeLine': { backgroundColor: 'rgba(242, 192, 98, 0.045)' },
-  '&.cm-focused .cm-selectionBackground, .cm-selectionBackground, ::selection': { backgroundColor: 'rgba(217, 138, 78, 0.32) !important' },
-  '.cm-exec-line': { backgroundColor: 'rgba(143, 191, 108, 0.16)', boxShadow: 'inset 3px 0 0 #8fbf6c' },
+  '.cm-content': { caretColor: 'var(--accent)', padding: '10px 0' },
+  '.cm-cursor': { borderLeftColor: 'var(--accent)', borderLeftWidth: '2px' },
+  '.cm-gutters': { backgroundColor: 'var(--editor-bg)', color: 'var(--ink-3)', border: 'none', paddingLeft: '6px' },
+  '.cm-activeLineGutter': { backgroundColor: 'transparent', color: 'var(--accent)' },
+  '.cm-activeLine': { backgroundColor: 'rgba(240, 163, 191, 0.045)' },
+  '&.cm-focused .cm-selectionBackground, .cm-selectionBackground, ::selection': { backgroundColor: 'rgba(240, 163, 191, 0.25) !important' },
+  // the line being run: blossom pink with a small flower at its end
+  '.cm-exec-line': { background: 'var(--exec-flower) no-repeat right 10px center / 11px 11px, var(--exec-bg)', boxShadow: 'inset 3px 0 0 var(--exec)', imageRendering: 'pixelated' },
   '.cm-error-line': { backgroundColor: 'rgba(226, 119, 94, 0.16)', boxShadow: 'inset 3px 0 0 #e2775e' },
   '.cm-matchingBracket': { backgroundColor: 'rgba(255, 208, 98, 0.18)', outline: 'none' },
-  '.cm-tooltip, .cm-tooltip-autocomplete': { backgroundColor: '#2a1f17', border: '1px solid #5a4231', borderRadius: '6px', color: '#f2e8d8', overflow: 'hidden' },
+  '.cm-tooltip, .cm-tooltip-autocomplete': { backgroundColor: '#2e1f24', border: '1px solid #5e414a', borderRadius: '6px', color: '#f2e8d8', overflow: 'hidden' },
   '.cm-tooltip.cm-completionInfo': { padding: '8px 10px', maxWidth: '320px', fontFamily: 'var(--ui-font)', fontSize: '12px', lineHeight: '1.45' },
   '.cm-completionDetail': { color: '#8f7d69', fontStyle: 'normal', marginLeft: '6px' },
-  '.cm-tooltip-autocomplete > ul > li[aria-selected]': { backgroundColor: '#3d2d21', color: '#f2c062' },
+  '.cm-tooltip-autocomplete > ul > li[aria-selected]': { backgroundColor: 'var(--line)', color: 'var(--accent)' },
   '&.cm-focused': { outline: 'none' },
 }, { dark: true });
 
@@ -62,7 +63,7 @@ const highlight = HighlightStyle.define([
   { tag: [t.keyword, t.controlKeyword, t.definitionKeyword, t.modifier], color: '#f2955a' },
   { tag: [t.string, t.special(t.string)], color: '#b9d98a' },
   { tag: [t.number, t.bool, t.null], color: '#ffcf6e' },
-  { tag: t.comment, color: '#9a8068', fontStyle: 'italic' },
+  { tag: t.comment, color: '#9c8088', fontStyle: 'italic' },
   { tag: [t.function(t.variableName), t.function(t.propertyName)], color: '#8fd0c0' },
   { tag: [t.definition(t.variableName), t.definition(t.function(t.variableName))], color: '#ffe7a8' },
   { tag: [t.operator, t.punctuation, t.bracket], color: '#c2a98b' },

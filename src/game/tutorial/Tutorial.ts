@@ -45,7 +45,7 @@ const STEPS: readonly Omit<TutorialStep, 'done'>[] = [
   {
     id: 'workbench', label: 'Build a Workbench',
     why: 'Machines turn resources into better things. The Workbench crafts Research Kits.',
-    how: 'Collect 6 Scrap Metal, then open Build (bottom left), pick the Workbench and click a free spot.',
+    how: 'Collect 6 Scrap Metal, then open Build (bottom of the screen), pick the Workbench and click a free spot.',
     code: null,
   },
   {
@@ -66,6 +66,48 @@ const STEPS: readonly Omit<TutorialStep, 'done'>[] = [
     how: 'Carry kits to the Lab: go_to("lab") and put("research_kit"). Then spend the Sparks in the Skills tab.',
     code: 'go_to("lab")\nput("research_kit")',
   },
+  {
+    id: 'variables', label: 'Teach Seedling to count',
+    why: 'A variable is a labelled box that remembers a value. With operators you can calculate with it.',
+    how: 'Learn Variables and Operators in the Skills tab, then count your trips.',
+    code: 'trips = 0\nwhile True:\n    go_to("scrap")\n    harvest()\n    deposit()\n    trips = trips + 1\n    print(trips)',
+  },
+  {
+    id: 'decide', label: 'Let Seedling decide',
+    why: 'With if and else a robot picks what to do. It can check its cargo before walking home.',
+    how: 'Learn Sense in the Skills tab. Now Seedling only walks home when the cargo hold is full.',
+    code: 'while True:\n    go_to("tree")\n    if is_inventory_full():\n        deposit()\n    else:\n        harvest()',
+  },
+  {
+    id: 'sawmill', label: 'Build a Sawmill',
+    why: 'Planks make Research Kits twice as fast and are needed for bigger buildings.',
+    how: 'Learn the Sawmill skill, then build one from the Build menu (Production tab).',
+    code: null,
+  },
+  {
+    id: 'planks', label: 'Saw your first planks',
+    why: 'Machines turn one material into a better one: 2 Timber become 3 Planks.',
+    how: 'Bring Timber to the Sawmill and take the planks out.',
+    code: 'go_to("tree")\nharvest()\ngo_to("sawmill")\nput("wood")\ntake("planks")\ndeposit()',
+  },
+  {
+    id: 'star', label: 'Earn a challenge star',
+    why: 'Challenges reward faster, shorter and bigger programs: every star pays Sparks.',
+    how: 'Open Challenges on the board (top left). Try Compact code: deliver 20 items with a short program.',
+    code: null,
+  },
+  {
+    id: 'robot2', label: 'Assemble a second robot',
+    why: 'Two robots do twice the work. Each one can run its own program.',
+    how: 'Learn Robot assembly, then select the workshop and press Assemble a robot.',
+    code: null,
+  },
+  {
+    id: 'tabs', label: 'Give each robot its own job',
+    why: 'Real automation splits the work: one robot gathers timber, the other scrap.',
+    how: "Pick the second robot's tab above the code, write its program and press Run.",
+    code: 'while True:\n    go_to("scrap")\n    harvest()\n    deposit()',
+  },
 ];
 
 export const TUTORIAL_STEPS = STEPS.length;
@@ -78,7 +120,9 @@ function stepFor(r: ActionResult): string | null {
   if (/^(move|moveTo|go_to|approach)\(/.test(r.action) || r.action === 'returnToStorage()') return 'move';
   if (r.action.startsWith('harvest(')) return 'harvest';
   if (r.action === 'deposit()' || (r.action.startsWith('put(') && r.data?.into === 'storage')) return 'deposit';
-  if (r.action.startsWith('take(') && (r.data?.moved as Record<string, number> | undefined)?.research_kit) return 'kit';
+  const moved = r.data?.moved as Record<string, number> | undefined;
+  if (r.action.startsWith('take(') && moved?.research_kit) return 'kit';
+  if (r.action.startsWith('take(') && moved?.planks) return 'planks';
   return null;
 }
 

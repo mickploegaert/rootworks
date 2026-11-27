@@ -1,5 +1,6 @@
 // Headless tests for the programming system: run with `npm run check`.
 import assert from 'node:assert/strict';
+import { withoutComment } from './scripting/comments.ts';
 import { RobotCommands } from './api/RobotCommands.ts';
 import { EntityManager } from './entities/EntityManager.ts';
 import { Robot } from './entities/Robot.ts';
@@ -333,6 +334,9 @@ print("at", get_position())`;
   assert.equal(b.code('java'), '// java');
   assert.equal(b.code('typescript'), null);
   assert.deepEqual(b.tutorial, ['move']);
+  b.setCode('python', 'go_to("tree")', 1);
+  assert.equal(new ProgramStore(storage).code('python', 1), 'go_to("tree")', 'each robot tab keeps its own program');
+  assert.equal(new ProgramStore(storage).code('python'), 'print("py")', 'and the shared program is untouched');
   b.saveSnippet('make_kit', 'deliver("wood", "workbench")'); b.saveSnippet('make_kit', 'put()');
   assert.deepEqual(new ProgramStore(storage).library, [{ name: 'make_kit', code: 'put()' }], 'the library survives a refresh; same name replaces');
   mem.set('rootworks.programs.v1', '{not json');
@@ -360,7 +364,12 @@ print("at", get_position())`;
   assert.equal(t.observe({ ok: true, action: 'take(research_kit)', data: { moved: { research_kit: 1 } } }), true);
   assert.ok(t.steps.find((s) => s.id === 'lab')!.done, 'the early Lab completes as soon as its turn comes');
   assert.equal(t.mark('research'), true);
+  assert.ok(!t.complete, 'the longer tutorial goes on after the first research');
+  for (const id of ['variables', 'decide', 'sawmill']) assert.equal(t.mark(id), true, id);
+  assert.equal(t.observe({ ok: true, action: 'take(planks)', data: { moved: { planks: 3 } } }), true, 'sawing planks');
+  for (const id of ['star', 'robot2', 'tabs']) assert.equal(t.mark(id), true, id);
   assert.ok(t.complete);
+  assert.equal(t.steps.length, 15);
   assert.deepEqual(new Tutorial(['move', 'deposit']).completed, ['move'], 'restored progress must be a prefix');
   assert.deepEqual(new Tutorial(['move', 'harvest', 'deposit', 'workbench']).completed, ['move', 'harvest', 'deposit', 'automate', 'workbench'], 'a lesson added later does not cost old saves their progress');
   assert.deepEqual(new Tutorial(['move', 'harvest', 'deposit']).completed, ['move', 'harvest', 'deposit'], 'but it is still taught when the save has not passed it');
@@ -388,3 +397,8 @@ print("at", get_position())`;
   assert.equal(runner.state, 'finished');
 }
 console.log('scripting ok');
+
+// ---------------------------------------------------------------- the robot's speech bubble leaves out # notes for humans
+assert.equal(withoutComment('go_to("scrap")    # walk to the pile'), 'go_to("scrap")');
+assert.equal(withoutComment('print("#1")  # count'), 'print("#1")');
+assert.equal(withoutComment('# only a note'), '');

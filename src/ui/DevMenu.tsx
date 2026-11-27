@@ -21,8 +21,31 @@ const loggedIn = () => { try { return localStorage.getItem(KEY) === '1'; } catch
 const QUICK: { code: string; label: string }[] = [
   { code: 'unlockall', label: 'Unlock every skill' }, { code: 'sparks 100', label: '+100 Sparks' }, { code: 'rich', label: '+500 of everything' },
   { code: 'builder', label: 'Finish construction' }, { code: 'land', label: 'Reclaim all land' }, { code: 'fleet', label: 'Add a robot' },
-  { code: 'skiptutorial', label: 'Skip the tutorial' }, { code: 'full', label: 'Fill robot cargo' },
+  { code: 'skiptutorial', label: 'Skip the tutorial' }, { code: 'full', label: 'Fill robot cargo' }, { code: 'chapter', label: 'Finish story chapter' }, { code: 'intro', label: 'Play the intro' },
 ];
+
+/** The page at /login: sign in once, then the game opens with the DEV button (cheats) in the corner. */
+export function DevLoginPage({ onDone }: { onDone(): void }) {
+  const [name, setName] = useState(''), [pass, setPass] = useState(''), [msg, setMsg] = useState(loggedIn() ? 'You are already logged in.' : '');
+  const login = async () => {
+    try {
+      if (await sha256(`${name.trim()}:${pass}`) !== CREDENTIAL) { setMsg('Wrong name or password.'); return; }
+    } catch { setMsg('Login needs a secure page (https or localhost).'); return; }
+    localStorage.setItem(KEY, '1');
+    onDone();
+  };
+  return (
+    <div className="pause-veil">
+      <form className="panel dev-login" onSubmit={(e) => { e.preventDefault(); void login(); }}>
+        <h2>Developer login</h2>
+        <label>Name<input autoFocus value={name} onChange={(e) => setName(e.target.value)} autoComplete="username" /></label>
+        <label>Password<input type="password" value={pass} onChange={(e) => setPass(e.target.value)} autoComplete="current-password" /></label>
+        {msg && <p className="muted">{msg}</p>}
+        <div className="row"><button type="button" onClick={onDone}>Back to the game</button><button type="submit" className="primary">Log in</button></div>
+      </form>
+    </div>
+  );
+}
 
 export function DevMenu({ game, regions, onTravel }: { game: Game; regions: RegionView[]; onTravel(id: RegionId): string | null }) {
   const [dev, setDev] = useState(loggedIn);

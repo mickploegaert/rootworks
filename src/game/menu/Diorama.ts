@@ -187,6 +187,12 @@ export function buildDiorama(entities: EntityManager): { world: World; programs:
     go_to("storage")
     put()
 `),
+    // Seedling, the player's own robot, works the front of the yard and gives a little hop after every delivery
+    crew(26, 27, 'Seedling', `while True:
+    go_to("wood")
+    harvest()
+    deposit()
+`),
   ];
   return { world, programs };
 }

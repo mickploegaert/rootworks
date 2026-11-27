@@ -1,4 +1,7 @@
 import { SPARKS_PER_KIT } from '../research/ResearchSystem.ts';
+import { CHAPTERS, OFFERING_ITEMS } from '../progress/Story.ts';
+import { researchById } from '../research/ResearchDefs.ts';
+import type { CosmeticId } from '../render/sprites/robot.ts';
 import { BUILDINGS, buildingById } from '../building/BuildingDefs.ts';
 import type { Entity } from '../entities/Entity.ts';
 import { ConstructionSite } from '../entities/ConstructionSite.ts';
@@ -50,6 +53,10 @@ export interface Progress {
   commissions: string[];
   /** Challenge stars and best scores, and today's order (absent in older saves). */
   challenges?: { stars: [string, number][]; best: [string, number][]; daily: { day: string; got: number; done: boolean } };
+  /** Milestones reached, items delivered in total, and Seedling's accessory (absent in older saves). */
+  achievements?: { done: string[]; delivered: number; cosmetic: string | null };
+  /** The valley's story: chapter, offerings given to the Heart Tree, its spring level (absent in older saves). */
+  story?: { chapter: number; offered: Record<string, number>; level: number };
 }
 
 /** A save game: the world seed, which region is active, a diff per visited region, and the player's progress. */
@@ -106,6 +113,8 @@ export function captureProgress(sim: Simulation): Progress {
     sparks: sim.research.sparks,
     commissions: [...sim.commissions.done],
     challenges: { stars: [...sim.challenges.stars], best: [...sim.challenges.best], daily: { ...sim.challenges.daily } },
+    achievements: { done: [...sim.achievements.done], delivered: sim.achievements.delivered, cosmetic: sim.achievements.cosmetic },
+    story: { chapter: sim.story.chapter, offered: { ...sim.story.offered } as Record<string, number>, level: sim.story.level },
   };
 }
 
@@ -122,6 +131,16 @@ export function applyProgress(sim: Simulation, p: Progress): void {
     for (const [id, n] of p.challenges.stars) sim.challenges.stars.set(id, n);
     sim.challenges.best = new Map(p.challenges.best);
     sim.challenges.daily = { ...p.challenges.daily };
+  }
+  if (p.story) {
+    sim.story.chapter = p.story.chapter; sim.story.level = p.story.level;
+    sim.story.offered = Object.fromEntries(Object.entries(p.story.offered).filter(([id]) => (OFFERING_ITEMS as readonly string[]).includes(id)));
+  }
+  if (p.achievements) {
+    for (const id of p.achievements.done) sim.achievements.done.add(id);
+    sim.achievements.delivered = p.achievements.delivered;
+    const c = p.achievements.cosmetic as CosmeticId | null;
+    sim.achievements.cosmetic = c && sim.achievements.cosmetics.includes(c) ? c : null; // only what was earned
   }
 }
 
@@ -197,6 +216,14 @@ function progressOk(s: Partial<Progress> & { tutorial?: unknown }): boolean {
     const c = s.challenges, pairs = (a: unknown) => Array.isArray(a) && a.length < 100 && a.every((x) => Array.isArray(x) && typeof x[0] === 'string' && typeof x[1] === 'number' && Number.isFinite(x[1]));
     if (!c || !pairs(c.stars) || !pairs(c.best) || !c.daily || typeof c.daily.day !== 'string' || !isInt(c.daily.got, 0, 1_000_000) || typeof c.daily.done !== 'boolean') return false;
   }
+  if (s.achievements !== undefined) {
+    const a = s.achievements;
+    if (!a || !Array.isArray(a.done) || a.done.length > 100 || !a.done.every((x) => typeof x === 'string') || !isInt(a.delivered, 0, 1e12) || (a.cosmetic !== null && typeof a.cosmetic !== 'string')) return false;
+  }
+  if (s.story !== undefined) {
+    const st = s.story;
+    if (!st || !isInt(st.chapter, 0, CHAPTERS.length) || !isInt(st.level, 0, 10_000) || !st.offered || typeof st.offered !== 'object' || !Object.values(st.offered).every((n) => isInt(n, 0, 1e12))) return false;
+  }
   if (s.tutorial !== undefined && !stringsOk(s.tutorial, 50, 40)) return false;
   if (s.commissions !== undefined && !stringsOk(s.commissions, 500)) return false;
   return stringsOk(s.research, 500);
@@ -251,6 +278,14 @@ export interface SlotSummary {
   research: number;
   regions: number;
   tutorialSteps: number;
+  /** The player's name for this valley, if they gave it one. */
+  name: string | null;
+  sparks: number;
+  /** Programming skills learned, 0..3: how far Seedling's sprout has grown. */
+  sprout: number;
+  cosmetic: string | null;
+  /** The Heart Tree's bloom stage, 0..5. */
+  bloom: number;
 }
 
 /** Reads and writes one save slot in browser storage. Never throws; a broken save is ignored, not fatal. */
@@ -272,7 +307,7 @@ export class SaveSlot {
   }
 
   clear(): void {
-    try { this.storage?.removeItem?.(this.key); this.storage?.setItem(this.key, ''); } catch { /* nothing to clear */ }
+    try { this.storage?.removeItem?.(this.key); this.storage?.setItem(this.key, ''); this.storage?.removeItem?.(`${this.key}.name`); } catch { /* nothing to clear */ }
   }
 
   summary(): SlotSummary | null {
@@ -282,7 +317,18 @@ export class SaveSlot {
     return {
       id: this.id, savedAt: s.savedAt, playSeconds: s.time, robots: regions.reduce((n, r) => n + (r?.robots.length ?? 0), 0),
       research: s.research.length, regions: regions.length, tutorialSteps: s.tutorial?.length ?? 0,
+      name: this.name, sparks: s.sparks ?? 0, sprout: Math.min(3, s.research.filter((id) => researchById(id)?.code).length),
+      cosmetic: s.achievements?.cosmetic ?? null, bloom: Math.min(CHAPTERS.length, s.story?.chapter ?? 0),
     };
+  }
+
+  /** The valley's name, kept beside the save (the game itself never writes it). */
+  get name(): string | null {
+    try { return this.storage?.getItem(`${this.key}.name`)?.slice(0, 40) || null; } catch { return null; }
+  }
+
+  rename(name: string): void {
+    try { this.storage?.setItem(`${this.key}.name`, name.trim().slice(0, 40)); } catch { /* storage unavailable: keep playing */ }
   }
 
   /** Every slot, empty ones as null. */

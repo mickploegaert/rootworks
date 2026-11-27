@@ -3,6 +3,8 @@ import type { ResearchView } from '../game/Game.ts';
 import { researchById } from '../game/research/ResearchDefs.ts';
 import { buildingById } from '../game/building/BuildingDefs.ts';
 import { Spark } from './ItemIcon.tsx';
+import { LANES, laneCount, laneGoal } from '../game/research/Lanes.ts';
+import { BlossomBranch, Petals } from './Blossom.tsx';
 import { SkillIcon } from './SkillIcons.tsx';
 
 type Node = ResearchView['nodes'][number];
@@ -13,13 +15,6 @@ type Pt = { x: number; y: number };
  * group them by what they teach. Copper traces run only through the gutters between columns and rows, so they never
  * cross a card. Presentation only: what a skill needs and costs comes from ResearchDefs.
  */
-const LANES: { id: string; label: string; hint: string; color: string; ids: string[] }[] = [
-  { id: 'logic', label: 'Memory & logic', hint: 'Store values, calculate, decide', color: '#8fd0c0', ids: ['counter', 'operators', 'sense', 'lists'] },
-  { id: 'flow', label: 'Control flow', hint: 'Repeat and reuse code', color: '#86c3e6', ids: ['loop', 'functions'] },
-  { id: 'machines', label: 'Machines', hint: 'Buildings that make things', color: '#f0a060', ids: ['sawmill', 'kiln', 'windpower', 'gardening', 'feeder'] },
-  { id: 'robots', label: 'Robot upgrades', hint: 'Faster and stronger robots', color: '#e8c56a', ids: ['speed1', 'speed2', 'speed3', 'yield1'] },
-  { id: 'land', label: 'Land & logistics', hint: 'More land, cargo and robots', color: '#b5dc8e', ids: ['surveying', 'surveying2', 'cargo', 'cargo2', 'logistics', 'assembly'] },
-];
 const laneOf = (n: { id: string; branch: string }) =>
   LANES.find((l) => l.ids.includes(n.id)) ?? LANES[n.branch === 'code' ? 0 : n.branch === 'machines' ? 2 : 4];
 
@@ -34,6 +29,16 @@ const LEARN: Record<string, { example?: string; unlocks: string }> = {
   sawmill: { example: 'go_to("sawmill")\nput("wood")\ntake("planks")', unlocks: 'The Sawmill: 2 Timber become 3 Planks' },
   kiln: { example: 'go_to("kiln")\nput("stone")\ntake("bricks")', unlocks: 'The Kiln: Fieldstone becomes Bricks' },
   logistics: { example: 'deliver("wood", "workbench")', unlocks: 'deliver(item, place): storage to machine in one command' },
+};
+
+/** The idea behind each programming skill, and a small exercise to try it in the editor. */
+const CONCEPT: Record<string, { idea: string; exercise: string }> = {
+  counter: { idea: 'A variable is a named box. trips = 0 puts 0 in a box called trips; writing trips later gives back what is inside.', exercise: '# Exercise: a variable remembers a value\nname = "Seedling"\nprint(name)' },
+  operators: { idea: 'Operators calculate (+ - * /) and compare (< > == !=). A comparison is either True or False.', exercise: '# Exercise: compare your stock\nstock = get_stock()\nprint(stock.get("wood", 0) >= 10)' },
+  sense: { idea: 'if runs its lines only when the test is True; else runs when it is not. That is how a robot decides.', exercise: '# Exercise: decide\nif is_inventory_full():\n    deposit()\nelse:\n    print("room for more")' },
+  loop: { idea: 'while repeats its lines as long as the test is True; for repeats them once for every item.', exercise: '# Exercise: repeat three times\nfor i in range(3):\n    harvest()' },
+  lists: { idea: 'A list keeps values in order. places[0] is the first one; for place in places visits them all.', exercise: '# Exercise: visit a list of places\nplaces = ["tree", "scrap"]\nfor place in places:\n    go_to(place)' },
+  functions: { idea: 'def gives a group of lines a name and parameters, so you can reuse them like a new command.', exercise: '# Exercise: your own command\ndef gather(place):\n    go_to(place)\n    harvest()\n\ngather("tree")' },
 };
 
 const NODE_W = 214, NODE_H = 62, COL = 292, ROW = 90, LEFT = 210, LANE_PAD = 30, LANE_GAP = 16, TOP = 20;
@@ -90,7 +95,7 @@ function trace(pts: Pt[], r = 8): string {
 const STATUS: Record<Node['state'], string> = { done: 'Learned', available: 'Ready to learn', expensive: 'Need more Sparks', locked: 'Locked' };
 
 /** Full-screen research board: lanes of skills, copper traces, a detail panel, zoom and pan. */
-export function SkillTree({ rv, onBuy, onClose }: { rv: ResearchView; onBuy(id: string): void; onClose(): void }) {
+export function SkillTree({ rv, onBuy, onClose, onPractice }: { rv: ResearchView; onBuy(id: string): void; onClose(): void; onPractice(code: string): void }) {
   const { pos, lanes, width, height } = useMemo(() => layout(rv.nodes), [rv.nodes]);
   const byId = useMemo(() => new Map(rv.nodes.map((n) => [n.id, n])), [rv.nodes]);
   const recommended = rv.nodes.filter((n) => n.state === 'available').sort((a, b) => a.cost - b.cost)[0]
@@ -178,6 +183,7 @@ export function SkillTree({ rv, onBuy, onClose }: { rv: ResearchView; onBuy(id: 
   return (
     <div className="skilltree" role="dialog" aria-label="Skill tree">
       <header className="skilltree-head">
+        <BlossomBranch className="orn-head" length={150} seed={7} side="up" />
         <h2>Research board</h2>
         <span className="tech-progress"><b>{learned}</b> / {rv.nodes.length} skills</span>
         <span className="sparks-big"><Spark />{rv.sparks}</span>
@@ -199,10 +205,14 @@ export function SkillTree({ rv, onBuy, onClose }: { rv: ResearchView; onBuy(id: 
       </header>
       <div className="skilltree-body">
         <div className="tech-stage" ref={stage} onPointerDown={onDown} onPointerMove={onMove} onPointerUp={() => { drag.current = null; }}>
+          <Petals trigger={fresh} count={22} />
           <div className="tech-board" style={{ width, height, transform: `translate(${view.x}px, ${view.y}px) scale(${view.k})` }}>
             {lanes.map(({ lane: l, y, h }) => (
               <div key={l.id} className="tech-lane" style={{ top: y, height: h, ['--lane' as string]: l.color }}>
-                <div className="tech-lane-label"><b>{l.label}</b><span>{l.hint}</span></div>
+                <div className="tech-lane-label"><b>{l.label}</b><span>{l.hint}</span>
+                  {(() => { const done = new Set(rv.nodes.filter((n) => n.state === 'done').map((n) => n.id)), c = laneCount(l, done), goal = laneGoal(l);
+                    return <span className={`lane-bonus ${c >= goal ? 'on' : ''}`}>{c >= goal ? 'Bonus: ' : `${Math.min(c, goal)}/${goal} for bonus: `}{l.bonus}</span>; })()}
+                </div>
               </div>
             ))}
             <svg className="tech-traces" width={width} height={height} aria-hidden>
@@ -211,6 +221,15 @@ export function SkillTree({ rv, onBuy, onClose }: { rv: ResearchView; onBuy(id: 
             </svg>
             {rv.nodes.map((n) => {
               const p = pos.get(n.id)!, l = laneOf(n);
+              // two steps away or more: still in the mist, so the board shows what is next, not everything at once
+              const far = n.state === 'locked' && (researchById(n.id)?.requires ?? []).some((r) => byId.get(r)?.state === 'locked');
+              if (far) return (
+                <button key={n.id} type="button" className="tech t-far" disabled title="Learn the skills before it first"
+                  style={{ left: p.x, top: p.y, width: NODE_W, height: NODE_H, ['--lane' as string]: l.color }}>
+                  <span className="tech-icon">?</span>
+                  <span className="tech-text"><b>Undiscovered</b><small>Further along</small></span>
+                </button>
+              );
               return (
                 <button key={n.id} type="button" className={`tech t-${n.state} ${sel?.id === n.id ? 'picked' : ''} ${fresh === n.id ? 'fresh' : ''}`}
                   style={{ left: p.x, top: p.y, width: NODE_W, height: NODE_H, ['--lane' as string]: l.color }}
@@ -238,6 +257,13 @@ export function SkillTree({ rv, onBuy, onClose }: { rv: ResearchView; onBuy(id: 
               </div>
             </div>
             <p className="tech-desc">{sel.description}</p>
+            {CONCEPT[sel.id] && (
+              <section className="tech-concept">
+                <span className="label">The idea</span>
+                <p>{CONCEPT[sel.id].idea}</p>
+                <button type="button" className="btn-sm" onClick={() => onPractice(CONCEPT[sel.id].exercise)}>Practice in the editor</button>
+              </section>
+            )}
             <section>
               <span className="label">You will be able to use</span>
               <p>{learn?.unlocks ?? sel.description}</p>

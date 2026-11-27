@@ -136,8 +136,9 @@ export class HarvestAction extends RobotAction {
   override update(ctx: ActionContext, dt: number): ActionStatus {
     const node = this.node!, def = node.def;
     this.elapsed += dt;
-    ctx.robot.progress = Math.min(1, this.elapsed / def.harvestTime);
-    if (this.elapsed < def.harvestTime) return 'running';
+    const time = def.harvestTime / ctx.robot.harvestSpeed;
+    ctx.robot.progress = Math.min(1, this.elapsed / time);
+    if (this.elapsed < time) return 'running';
     // re-check: another robot may have emptied it, or cargo changed
     const problem = harvestProblem(ctx, node);
     if (problem) return this.fail(problem);

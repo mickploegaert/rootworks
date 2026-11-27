@@ -1,4 +1,6 @@
 import { useEffect, useRef, useState } from 'react';
+import { useMovable } from '../layout.ts';
+import { SizeGrip } from '../Movable.tsx';
 import type { ConsoleEntry, Game, ProgramStatus } from '../../game/Game.ts';
 import type { ProgramStore } from '../../game/save/ProgramStore.ts';
 import { LANGUAGES, LANGUAGE_IDS } from '../../game/scripting/adapters.ts';
@@ -7,7 +9,9 @@ import { researchById } from '../../game/research/ResearchDefs.ts';
 import type { LanguageId } from '../../game/scripting/types.ts';
 import type { TutorialStep } from '../../game/tutorial/Tutorial.ts';
 import { CodeEditor, type EditorApi } from './CodeEditor.tsx';
+import { BlossomBranch, BlossomIcon, Petals } from '../Blossom.tsx';
 import { LOGIN_EVENT } from '../DevMenu.tsx';
+import { robotColor } from '../../game/robotColors.ts';
 
 const CONSOLE_LIMIT = 300;
 const SAVE_DELAY = 300;
@@ -26,14 +30,27 @@ interface Props {
   skills: readonly string[];
   /** Robot names: with more than one, the player picks which robot a Run starts. */
   robots: readonly string[];
+  /** Live numbers of the running program. */
+  run: { delivered: number; seconds: number; lines: number } | null;
+  /** Language, examples and mode: shown once the basics are done (a new player needs only code and Run). */
+  extras: boolean;
   open: boolean;
   onToggle(): void;
 }
 
 /** The programming workspace: language, editor, run controls, tutorial and console. UI only; the game runs the code. */
-export function CodePanel({ game, store, tutorial, showTutorial, skills, robots, open, onToggle }: Props) {
+export function CodePanel({ game, store, tutorial, showTutorial, skills, robots, run: runInfo, extras, open, onToggle }: Props) {
   const [target, setTarget] = useState<number | null>(null);
+  const place = useMovable('code', { minW: 420, minH: 360 });
   const learned = new Set(skills);
+  // skills learned while playing: their commands are marked NEW in the palette until it has been opened
+  const known = useRef<Set<string> | null>(null);
+  const [fresh, setFresh] = useState<Set<string>>(new Set());
+  useEffect(() => {
+    if (!known.current) { known.current = new Set(skills); return; }
+    const added = skills.filter((k) => !known.current!.has(k));
+    if (added.length) { known.current = new Set(skills); setFresh((f) => new Set([...f, ...added])); }
+  }, [skills]);
   const [completions] = useState(() => game.commandReference().map((c) => ({ label: c.name, detail: `(${c.params.join(', ')})`, info: c.doc })));
   const [guided, setGuidedState] = useState(store.guided);
   useEffect(() => { game.setGuided(guided); }, [game, guided]);
@@ -41,6 +58,7 @@ export function CodePanel({ game, store, tutorial, showTutorial, skills, robots,
   const [language, setLanguage] = useState<LanguageId>(store.language);
   const [code, setCode] = useState(() => store.code(store.language) ?? STARTER_CODE[store.language]);
   const [status, setStatus] = useState<ProgramStatus>(game.programStatus);
+  const [doneRun, setDoneRun] = useState<number | null>(null); // a finished program lets petals fall
   const [log, setLog] = useState<ConsoleEntry[]>([]);
   const saveTimer = useRef<number>(0);
   const editor = useRef<EditorApi | null>(null);
@@ -50,7 +68,7 @@ export function CodePanel({ game, store, tutorial, showTutorial, skills, robots,
 
   useEffect(() => {
     const offs = [
-      game.events.on('program', setStatus),
+      game.events.on('program', (p) => { setStatus((prev) => { if (p.state === 'finished' && prev.state !== 'finished') setDoneRun(Date.now()); return p; }); }),
       game.events.on('console', (e) => setLog((l) => [...l.slice(-(CONSOLE_LIMIT - 1)), e])),
       game.events.on('insertCode', (snippet) => insert.current(snippet)),
     ];
@@ -61,7 +79,7 @@ export function CodePanel({ game, store, tutorial, showTutorial, skills, robots,
 
   // save on edit (debounced) and when leaving the page
   const flush = useRef(() => {});
-  flush.current = () => { window.clearTimeout(saveTimer.current); store.setCode(language, code); };
+  flush.current = () => { window.clearTimeout(saveTimer.current); store.setCode(language, code, target); };
   useEffect(() => {
     const onHide = () => flush.current();
     window.addEventListener('beforeunload', onHide);
@@ -71,7 +89,7 @@ export function CodePanel({ game, store, tutorial, showTutorial, skills, robots,
   const edit = (next: string) => {
     setCode(next);
     window.clearTimeout(saveTimer.current);
-    saveTimer.current = window.setTimeout(() => store.setCode(language, next), SAVE_DELAY);
+    saveTimer.current = window.setTimeout(() => store.setCode(language, next, target), SAVE_DELAY);
   };
 
   const switchLanguage = (next: LanguageId) => {
@@ -79,14 +97,14 @@ export function CodePanel({ game, store, tutorial, showTutorial, skills, robots,
     flush.current(); // the current language keeps its own program
     store.setLanguage(next);
     setLanguage(next);
-    setCode(store.code(next) ?? STARTER_CODE[next]);
+    setCode(store.code(next, target) ?? store.code(next) ?? STARTER_CODE[next]);
   };
 
   const replaceCode = (next: string, what: string) => {
     if (next === code) return;
     if (!window.confirm(`Replace your current ${LANGUAGES[language].name} program with ${what}?`)) return;
     setCode(next);
-    store.setCode(language, next);
+    store.setCode(language, next, target);
   };
 
   /** Add a snippet to the program: below the cursor when the editor is open, else at the end. */
@@ -95,6 +113,14 @@ export function CodePanel({ game, store, tutorial, showTutorial, skills, robots,
     if (!open) onToggle();
     if (editor.current) { editor.current.insert(snippet); return; }
     edit(`${code.trimEnd()}\n${snippet}\n`);
+  };
+
+  /** Switch robot tab: the open program is saved under the old tab, the new tab's own program opens. */
+  const pickTarget = (t: number | null) => {
+    if (t === target) return;
+    flush.current();
+    setTarget(t);
+    setCode(store.code(language, t) ?? store.code(language) ?? STARTER_CODE[language]);
   };
 
   const active = status.state === 'running' || status.state === 'paused';
@@ -109,16 +135,20 @@ export function CodePanel({ game, store, tutorial, showTutorial, skills, robots,
   }
 
   return (
-    <section className="panel code-panel" aria-label="Program editor">
-      <header className="code-head">
+    <section ref={place.ref} style={place.style} className={`panel code-panel ${place.moved ? 'moved' : ''}`} aria-label="Program editor">
+      <Petals trigger={doneRun} />
+      <SizeGrip m={place} label="the editor" />
+      <header className="code-head" {...place.dragProps} title="Drag to move the editor. Double-click to dock it again.">
+        <BlossomBranch className="code-blossom" length={90} seed={1} side="up" />
         <h2>Program</h2>
         <span className={`run-state rs-${status.state}`} role="status">
           {STATUS_LABEL[status.state]}{status.state === 'running' && status.line ? ` · line ${status.line}` : ''}
         </span>
+        {runInfo && runInfo.delivered > 0 && <span className="run-stats" title="Items this run delivered to storage">{runInfo.delivered} delivered · {Math.round((runInfo.delivered / Math.max(1, runInfo.seconds)) * 60)}/min</span>}
         <button type="button" className="icon" onClick={onToggle} aria-label="Hide the program editor" title="Hide (P)">Hide</button>
       </header>
 
-      <div className="code-bar">
+      {extras && <div className="code-bar unlock-in">
         <label>
           <span className="label">Language</span>
           <select value={language} onChange={(e) => switchLanguage(e.target.value as LanguageId)} disabled={active}>
@@ -149,23 +179,24 @@ export function CodePanel({ game, store, tutorial, showTutorial, skills, robots,
             </select>
           </label>
         )}
-      </div>
+      </div>}
 
       {robots.length > 1 && (
-        <label className="run-on" title="Each robot can run its own program: Run replaces only the chosen robot's program.">
-          <span className="label">Run on</span>
-          <select value={target ?? 'all'} onChange={(e) => setTarget(e.target.value === 'all' ? null : Number(e.target.value))}>
-            <option value="all">All robots</option>
-            {robots.map((n, i) => <option key={i} value={i}>{n}</option>)}
-          </select>
-        </label>
+        <nav className="robot-tabs" role="tablist" aria-label="Which robot this program is for" title="Each robot can have its own program. Run starts this tab's program on its robot only.">
+          {[null, ...robots.map((_, i) => i)].map((t) => (
+            <button key={t ?? 'all'} type="button" role="tab" aria-selected={target === t} className={target === t ? 'on' : ''}
+              style={t === null ? undefined : { ['--robot' as string]: robotColor(t) }} onClick={() => pickTarget(t)}>
+              {t === null ? 'All robots' : <><i />{robots[t].replace(/^RW-\w+ /, '').replace(/"/g, '')}</>}
+            </button>
+          ))}
+        </nav>
       )}
       {language === 'python' && (
-        <button type="button" className={`palette-toggle ${palette ? 'on' : ''}`} onClick={() => setPalette(!palette)} aria-expanded={palette}>
+        <button type="button" className={`palette-toggle ${palette ? 'on' : ''} ${fresh.size ? 'has-new' : ''}`} onClick={() => { if (palette) setFresh(new Set()); setPalette(!palette); }} aria-expanded={palette}>
           {palette ? 'Hide commands' : 'Commands & help'}
         </button>
       )}
-      {palette && language === 'python' && <Palette game={game} store={store} code={code} selection={() => editor.current?.selection() ?? ''} learned={guided ? learned : null} onInsert={(c) => insert.current(c)} />}
+      {palette && language === 'python' && <Palette game={game} store={store} code={code} selection={() => editor.current?.selection() ?? ''} learned={guided ? learned : null} fresh={fresh} onInsert={(c) => insert.current(c)} />}
 
       {!LANGUAGES[language].available && (
         <p className="code-note">{LANGUAGES[language].name} is still being built, so this program can't run yet. Your code here is saved separately. Switch to Python to run programs.</p>
@@ -187,7 +218,7 @@ export function CodePanel({ game, store, tutorial, showTutorial, skills, robots,
         </div>
       )}
       <div className="code-actions">
-        <button type="button" className="primary" onClick={run} disabled={active} title="Run (Ctrl+Enter)">Run</button>
+        <button type="button" className="primary" onClick={run} disabled={active} title="Run (Ctrl+Enter)"><BlossomIcon />Run</button>
         {status.state === 'paused'
           ? <button type="button" onClick={() => game.resumeProgram()}>Resume</button>
           : <button type="button" onClick={() => game.pauseProgram()} disabled={status.state !== 'running'}>Pause</button>}
@@ -254,7 +285,7 @@ function Lesson({ steps, onInsert }: { steps: TutorialStep[]; onInsert(code: str
 }
 
 /** Every command and Python idea, with what it does and a ready example. Locked ones say what unlocks them. */
-function Palette({ game, store, code, selection, learned, onInsert }: { game: Game; store: ProgramStore; code: string; selection(): string; learned: ReadonlySet<string> | null; onInsert(code: string): void }) {
+function Palette({ game, store, code, selection, learned, fresh, onInsert }: { game: Game; store: ProgramStore; code: string; selection(): string; learned: ReadonlySet<string> | null; fresh: ReadonlySet<string>; onInsert(code: string): void }) {
   const [library, setLibrary] = useState(store.library);
   const [commands] = useState(() => game.commandReference());
   const [q, setQ] = useState('');
@@ -262,8 +293,8 @@ function Palette({ game, store, code, selection, learned, onInsert }: { game: Ga
   const row = (key: string, code: string, doc: string, skill?: string) => {
     const locked = !!skill && !!learned && !learned.has(skill);
     return (
-      <li key={key} className={locked ? 'locked' : ''}>
-        <code>{code.split('\n')[0]}{code.includes('\n') ? ' ...' : ''}</code>
+      <li key={key} className={`${locked ? 'locked' : ''} ${skill && fresh.has(skill) ? 'new' : ''}`}>
+        <code>{skill && fresh.has(skill) && <span className="new-badge">NEW</span>}{code.split('\n')[0]}{code.includes('\n') ? ' ...' : ''}</code>
         <span className="doc">{doc}{locked && <em> Needs the {researchById(skill!)?.name} skill (Skills tab).</em>}</span>
         <button type="button" className="icon" disabled={locked} onClick={() => onInsert(code)}>Insert</button>
       </li>

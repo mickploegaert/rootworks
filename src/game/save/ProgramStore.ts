@@ -11,8 +11,8 @@ export interface KeyValueStorage {
 export interface ProgramSave {
   version: 1;
   language: LanguageId;
-  /** One program per language; switching never overwrites another language's code. */
-  code: Partial<Record<LanguageId, string>>;
+  /** One program per language (key "python"), plus one per robot tab (key "python:1"); switching never overwrites another. */
+  code: Partial<Record<string, string>>;
   /** Completed tutorial steps by id. */
   tutorial: string[];
   /** Guided mode: syntax unlocks with firmware. Off is Engineer mode (any Python). */
@@ -37,11 +37,11 @@ export class ProgramStore {
   get guided(): boolean { return this.data.guided !== false; }
   setGuided(on: boolean): void { this.data.guided = on; this.write(); }
 
-  /** Saved code for a language, or null if the player has none yet. */
-  code(lang: LanguageId): string | null { return this.data.code[lang] ?? null; }
+  /** Saved code for a language (and robot tab: null = all robots), or null if the player has none yet. */
+  code(lang: LanguageId, robot: number | null = null): string | null { return this.data.code[robot === null ? lang : `${lang}:${robot}`] ?? null; }
 
   setLanguage(lang: LanguageId): void { this.data.language = lang; this.write(); }
-  setCode(lang: LanguageId, code: string): void { this.data.code[lang] = code.slice(0, MAX_CODE); this.write(); }
+  setCode(lang: LanguageId, code: string, robot: number | null = null): void { this.data.code[robot === null ? lang : `${lang}:${robot}`] = code.slice(0, MAX_CODE); this.write(); }
   setTutorial(done: string[]): void { this.data.tutorial = [...done]; this.write(); }
 
   get library(): readonly { name: string; code: string }[] { return this.data.library ?? []; }
@@ -62,7 +62,10 @@ export class ProgramStore {
       // validate: this is data from outside the program
       if (LANGUAGE_IDS.includes(d.language as LanguageId)) fresh.language = d.language as LanguageId;
       if (d.code && typeof d.code === 'object') {
-        for (const l of LANGUAGE_IDS) if (typeof d.code[l] === 'string') fresh.code[l] = d.code[l]!.slice(0, MAX_CODE);
+        for (const [k, v] of Object.entries(d.code)) {
+          const [l, n] = k.split(':');
+          if (LANGUAGE_IDS.includes(l as LanguageId) && (n === undefined || /^\d{1,2}$/.test(n)) && typeof v === 'string') fresh.code[k] = v.slice(0, MAX_CODE);
+        }
       }
       if (d.guided === false) fresh.guided = false;
       if (Array.isArray(d.library)) fresh.library = d.library.filter((s) => s && typeof s.name === 'string' && typeof s.code === 'string').slice(0, 50);

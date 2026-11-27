@@ -11,6 +11,7 @@ export interface Settings {
   editorFont: number;
   showTutorial: boolean;
   sound: number;
+  theme: 'sakura' | 'workshop';
 }
 
 interface Choice<T> { value: T; label: string }
@@ -31,6 +32,8 @@ export const SETTING_DEFS: readonly SettingDef[] = [
     choices: [{ value: true, label: 'Show' }, { value: false, label: 'Hide' }] },
   { id: 'editorFont', group: 'Programming', label: 'Editor text size', help: 'Font size of the code editor and console.',
     choices: [{ value: 12, label: 'Small' }, { value: 14, label: 'Medium' }, { value: 16, label: 'Large' }, { value: 19, label: 'Extra large' }] },
+  { id: 'theme', group: 'Display', label: 'Theme', help: 'Sakura dusk: plum wood and cherry blossom. Workshop: walnut and honey, no blossom.',
+    choices: [{ value: 'sakura', label: 'Sakura dusk' }, { value: 'workshop', label: 'Workshop' }] },
   { id: 'uiScale', group: 'Display', label: 'Interface size', help: 'Scale of the panels, buttons and text around the map.',
     choices: [{ value: 0.9, label: '90%' }, { value: 1, label: '100%' }, { value: 1.15, label: '115%' }, { value: 1.3, label: '130%' }] },
   { id: 'reducedMotion', group: 'Accessibility', label: 'Reduce motion', help: 'Turns off drifting clouds, insects and the slow title-screen camera.',
@@ -40,7 +43,7 @@ export const SETTING_DEFS: readonly SettingDef[] = [
 const KEY = 'rootworks.settings.v1';
 
 export function defaultSettings(prefersReducedMotion = false): Settings {
-  return { autosave: 30, reducedMotion: prefersReducedMotion, uiScale: 1, editorFont: 14, showTutorial: true, sound: 0.6 };
+  return { autosave: 30, reducedMotion: prefersReducedMotion, uiScale: 1, editorFont: 14, showTutorial: true, sound: 0.6, theme: 'sakura' };
 }
 
 /** Reads and writes settings; anything stored that isn't one of an option's choices falls back to the default. */

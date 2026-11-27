@@ -32,6 +32,8 @@ export class Robot extends Entity {
   bubble: { text: string; error: boolean } | null = null;
   /** Extra units every harvest() collects (Sharp tools). */
   yieldBonus = 0;
+  /** Harvest speed factor (Control flow milestone). */
+  harvestSpeed = 1;
 
   constructor(x: number, y: number, name = 'RW-01 "Seedling"') {
     super(x, y, 'robot', name, 'A salvaged utility bot. It follows queued commands.');

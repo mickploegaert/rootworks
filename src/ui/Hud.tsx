@@ -1,8 +1,15 @@
-import { useCallback, useEffect, useState } from 'react';
+import { useCallback, useEffect, useRef, useState } from 'react';
 import type { RegionId } from '../game/world/regions.ts';
 import { WorldMap } from './WorldMap.tsx';
 import { ItemIcon, Spark } from './ItemIcon.tsx';
 import { SkillTree } from './SkillTree.tsx';
+import { readAlbum } from './album.ts';
+import { BlossomBranch, BlossomIcon } from './Blossom.tsx';
+import { ChapterLetter, StoryTab } from './Story.tsx';
+import { resetLayout, useMovable } from './layout.ts';
+import { Grip, SizeGrip } from './Movable.tsx';
+import { COSMETIC_NAMES } from '../game/progress/Achievements.ts';
+import type { CosmeticId } from '../game/render/sprites/robot.ts';
 import { DevMenu } from './DevMenu.tsx';
 
 import type { ResourceId } from '../game/resources/ResourceDefs.ts';
@@ -42,8 +49,8 @@ export function Hud({ hud, onBuild, thumbnail, onMenu, game, settings, onSetting
       if (t?.closest?.('input, textarea, select, [contenteditable="true"], .cm-editor')) return;
       const k = e.key.toLowerCase();
       if (e.ctrlKey || e.metaKey || e.altKey) return;
-      if (k === 'm') setMapOpen((o) => !o);
-      if (k === 'k') setResearchOpen((o) => !o);
+      if (k === 'm' && openRef.current.map) setMapOpen((o) => !o);
+      if (k === 'k' && openRef.current.skills) setResearchOpen((o) => !o);
       if (k === 'b') document.querySelector<HTMLButtonElement>('.build-toggle')?.click();
       if (k === 'p') document.querySelector<HTMLButtonElement>('.code-tab, .code-head button.icon')?.click();
       if (e.key === '?') setHelp((o) => !o);
@@ -51,19 +58,27 @@ export function Hud({ hud, onBuild, thumbnail, onMenu, game, settings, onSetting
     window.addEventListener('keydown', key);
     return () => window.removeEventListener('keydown', key);
   }, []);
-  const [paused, setPaused] = useState<null | 'menu' | 'settings'>(null);
-  const rv = hud.research, buyable = rv.nodes.filter((n) => n.state === 'available').length;
+  const [paused, setPaused] = useState<null | 'menu' | 'settings' | 'album'>(null);
+  const rv = hud.research, buyable = rv.nodes.filter((n) => n.state === 'available').length, open = hud.unlocked;
+  const openRef = useRef(open);
+  openRef.current = open;
   return (
     <>
       <header className="plate">
+        <BlossomIcon />
         <h1>ROOTWORKS</h1>
         <span>{hud.region.name} · {hud.timeOfDay}</span>
-        <button type="button" className={`research-toggle ${mapOpen ? 'on' : ''}`} onClick={() => setMapOpen(true)} title="World map (M)">
-          Map <small>{hud.region.name}</small>
-        </button>
-        <button type="button" className={`research-toggle ${researchOpen ? 'on' : ''}`} onClick={() => setResearchOpen(!researchOpen)} aria-expanded={researchOpen}>
-          Skills <small className="sparks" title="Sparks: earned from lessons, commissions and the Lab. Spend them on skills."><Spark />{rv.sparks}{buyable ? ` · ${buyable} to learn` : ''}</small>
-        </button>
+        {open.map && (
+          <button type="button" className={`research-toggle unlock-in ${mapOpen ? 'on' : ''}`} onClick={() => setMapOpen(true)} title="World map (M)">
+            Map <small>{hud.region.name}</small>
+          </button>
+        )}
+        {open.skills && (
+          <button type="button" className={`research-toggle unlock-in ${researchOpen ? 'on' : ''} ${buyable ? 'ready' : ''}`} onClick={() => setResearchOpen(!researchOpen)} aria-expanded={researchOpen} title="Skills (K)">
+            Skills <small className="sparks" title="Sparks: earned from lessons, commissions and the Lab. Spend them on skills."><Spark />{rv.sparks}{buyable ? ` · ${buyable} to learn` : ''}</small>
+          </button>
+        )}
+        {open.skills && <SparksTip />}
         <button type="button" className="icon new-game" onClick={() => setPaused('menu')} title="Settings, save and quit">Menu</button>
       </header>
       {paused && (
@@ -75,10 +90,14 @@ export function Hud({ hud, onBuild, thumbnail, onMenu, game, settings, onSetting
                 <p className="muted">Slot {slot} · the game saves automatically. Robots keep working while this is open.</p>
                 <div className="pause-buttons">
                   <button type="button" autoFocus onClick={() => setPaused(null)}>Back to the valley</button>
+                  <button type="button" onClick={() => setPaused('album')}>Album <small>{hud.achievements.filter((a) => a.done).length}/{hud.achievements.length}</small></button>
                   <button type="button" onClick={() => setPaused('settings')}>Settings</button>
+                  <button type="button" onClick={() => { resetLayout(); setPaused(null); }}>Reset panel layout <small>panels back in place</small></button>
                   <button type="button" onClick={onMenu}>Save and quit to title</button>
                 </div>
               </>
+            ) : paused === 'album' ? (
+              <Album achievements={hud.achievements} onBack={() => setPaused('menu')} />
             ) : (
               <>
                 <div className="row"><h2>Settings</h2><button type="button" className="icon" onClick={() => setPaused('menu')}>back</button></div>
@@ -89,9 +108,10 @@ export function Hud({ hud, onBuild, thumbnail, onMenu, game, settings, onSetting
         </div>
       )}
       <StorageBar lines={hud.storage} />
-      <Commissions list={hud.commissions} daily={hud.daily} challenges={hud.challenges} />
+      {open.board && <Commissions list={hud.commissions} daily={hud.daily} challenges={hud.challenges} story={hud.story} open={open} />}
+      <ChapterLetter game={game} />
       {mapOpen && <WorldMap regions={hud.regions} onTravel={onTravel} onClose={() => setMapOpen(false)} />}
-      {researchOpen && <SkillTree rv={rv} onBuy={(id) => game.buySkill(id)} onClose={closeSkills} />}
+      {researchOpen && <SkillTree rv={rv} onBuy={(id) => game.buySkill(id)} onClose={closeSkills} onPractice={(code) => { game.insertCode(code); closeSkills(); }} />}
       {hud.selection && <Inspector sel={hud.selection} game={game} />}
       <DevMenu game={game} regions={hud.regions} onTravel={onTravel} />
       {help && (
@@ -103,8 +123,8 @@ export function Hud({ hud, onBuild, thumbnail, onMenu, game, settings, onSetting
           </dl>
         </section>
       )}
-      <RobotPanel robot={hud.robot} log={hud.log} />
-      <BuildMenu catalog={hud.catalog} build={hud.build} onBuild={onBuild} thumbnail={thumbnail} />
+      <RobotPanel robot={hud.robot} log={hud.log} wardrobe={hud.wardrobe} onWear={(id) => game.wear(id)} />
+      {open.build && <BuildMenu catalog={hud.catalog} build={hud.build} onBuild={onBuild} thumbnail={thumbnail} />}
       <aside className="hint">
         <b>Click</b> inspect · <b>Drag</b> pan · <b>B</b> build · <b>K</b> skills · <b>P</b> program · <b>?</b> all keys
       </aside>
@@ -113,24 +133,72 @@ export function Hud({ hud, onBuild, thumbnail, onMenu, game, settings, onSetting
 }
 
 
-function StorageBar({ lines }: { lines: ResourceLine[] }) {
+/** Once, when Skills first appears: what Sparks are, in two lines. */
+function SparksTip() {
+  const KEY = 'rootworks.tip.sparks';
+  const [show, setShow] = useState(() => { try { return localStorage.getItem(KEY) !== 'seen'; } catch { return false; } });
+  if (!show) return null;
+  const close = () => { try { localStorage.setItem(KEY, 'seen'); } catch { /* memory only */ } setShow(false); };
   return (
-    <section className="panel storage" aria-label="Stored resources">
-      <span className="label">Storage</span>
-      {lines.map((l) => (
-        <span key={l.id} className={`res ${l.amount ? '' : 'empty'}`}>
-          <ItemIcon id={l.id} explain /><span className="res-name">{l.name}</span><b>{l.amount}</b>
+    <div className="panel tip sparks-tip unlock-in" role="note">
+      <b><Spark /> Sparks</b>
+      <p>You earn them from lessons, orders and later the Lab. Spend them in <b>Skills</b> on new commands for Seedling, like loops.</p>
+      <button type="button" className="btn-primary btn-sm" onClick={close}>Got it</button>
+    </div>
+  );
+}
+
+/** 1234 -> 1.2k, 56000 -> 56k: the bar stays short however full the storage gets. */
+const short = (n: number) => (n < 1000 ? String(n) : n < 10000 ? `${(n / 1000).toFixed(1).replace(/\.0$/, '')}k` : n < 1e6 ? `${Math.floor(n / 1000)}k` : `${(n / 1e6).toFixed(1)}M`);
+/** Always shown, even at 0: what a new valley starts with. Everything else appears once there is some. */
+const BASIC = new Set(['wood', 'stone', 'scrap']);
+
+function StorageBar({ lines }: { lines: ResourceLine[] }) {
+  const m = useMovable('storage');
+  const shown = lines.filter((l) => l.amount > 0 || BASIC.has(l.id));
+  // panels below the bar start under it, however many rows it wraps into
+  useEffect(() => {
+    const el = m.ref.current;
+    if (!el) return;
+    const ro = new ResizeObserver(() => document.documentElement.style.setProperty('--storage-h', `${m.moved ? 40 : el.offsetHeight}px`));
+    ro.observe(el);
+    return () => ro.disconnect();
+  }, [m.ref, m.moved]);
+  return (
+    <section ref={m.ref} style={m.style} className={`panel storage ${m.moved ? 'moved' : ''}`} aria-label="Stored resources">
+      <Grip m={m} label="the storage bar" />
+      <span className="label"><BlossomIcon />Storage</span>
+      {shown.map((l) => (
+        <span key={l.id} className={`res ${l.amount ? '' : 'empty'}`} title={`${l.name}: ${l.amount}`}>
+          <ItemIcon id={l.id} explain /><b>{short(l.amount)}</b>
         </span>
       ))}
     </section>
   );
 }
 
-function RobotPanel({ robot, log }: { robot: HudSnapshot['robot']; log: HudSnapshot['log'] }) {
+function RobotPanel({ robot, log, wardrobe, onWear }: { robot: HudSnapshot['robot']; log: HudSnapshot['log']; wardrobe: HudSnapshot['wardrobe']; onWear(id: CosmeticId | null): void }) {
   const pct = (robot.used / robot.capacity) * 100;
+  const m = useMovable('robot');
+  // the board above stops short of this panel, however tall it gets
+  useEffect(() => {
+    const el = m.ref.current;
+    if (!el) return;
+    const ro = new ResizeObserver(() => document.documentElement.style.setProperty('--robot-h', `${m.moved ? 0 : el.offsetHeight}px`));
+    ro.observe(el);
+    return () => ro.disconnect();
+  }, [m.ref, m.moved]);
   return (
-    <section className="panel robot" aria-label="Robot status">
+    <section ref={m.ref} style={m.style} className="panel robot" aria-label="Robot status">
+      <Grip m={m} label="the robot panel" />
       <div className="row"><h2>{robot.name}</h2><span className={`state s-${robot.state}`}>{robot.state}</span></div>
+      {wardrobe.owned.length > 0 && (
+        <div className="wardrobe" role="group" aria-label="Seedling's accessory">
+          {[null, ...wardrobe.owned].map((c) => (
+            <button key={c ?? 'none'} type="button" className={wardrobe.worn === c ? 'on' : ''} onClick={() => onWear(c)}>{c ? COSMETIC_NAMES[c] : 'None'}</button>
+          ))}
+        </div>
+      )}
       <p className="muted">Tile {robot.x}, {robot.y}{robot.queue.length > 1 ? ` · ${robot.queue.length - 1} queued` : ''}</p>
       {robot.progress > 0 && <div className="bar progress"><div style={{ width: `${robot.progress * 100}%` }} /></div>}
       <div className="row cargo-head"><span className="label">Cargo</span><span>{robot.used} / {robot.capacity}</span></div>
@@ -141,7 +209,7 @@ function RobotPanel({ robot, log }: { robot: HudSnapshot['robot']; log: HudSnaps
       </div>
       {log.length > 0 && (
         <ul className="log">
-          {log.map((m) => <li key={m.id} className={m.ok ? 'ok' : 'err'}>{m.text}</li>)}
+          {log.slice(0, 3).map((m) => <li key={m.id} className={m.ok ? 'ok' : 'err'}>{m.text}</li>)}
         </ul>
       )}
     </section>
@@ -161,8 +229,8 @@ function BuildMenu({ catalog, build, onBuild, thumbnail }: { catalog: CatalogEnt
     <div className="build-dock">
       {build && (
         <div className={`panel build-banner ${build.problem ? 'bad' : ''}`} role="status">
-          <b>{build.name}</b>
-          <span>{build.problem ?? (build.overMap ? 'Click to place' : 'Point at a spot on the island')}</span>
+          <b>{build.moving ? `Moving ${build.name}` : build.name}</b>
+          <span>{build.problem ?? (build.overMap ? (build.moving ? 'Click to move it here' : 'Click to place') : 'Point at a spot on the island')}</span>
           <span className="keys"><kbd>R</kbd> rotate · <kbd>Esc</kbd> done</span>
         </div>
       )}
@@ -194,7 +262,7 @@ function BuildMenu({ catalog, build, onBuild, thumbnail }: { catalog: CatalogEnt
         </section>
       )}
       <button type="button" className={`build-toggle ${open ? 'on' : ''}`} onClick={() => { setOpen(!open); if (open) onBuild(null); }} aria-expanded={open}>
-        {open ? 'Close' : 'Build'}
+        <BlossomIcon />{open ? 'Close' : 'Build'}
       </button>
     </div>
   );
@@ -205,16 +273,22 @@ function Cost({ lines }: { lines: ResourceLine[] }) {
 }
 
 /** The board on the left: today's order, the villagers' commissions, and the optional challenges with stars. */
-function Commissions({ list, daily, challenges }: { list: HudSnapshot['commissions']; daily: HudSnapshot['daily']; challenges: HudSnapshot['challenges'] }) {
-  const [tab, setTab] = useState<'orders' | 'challenges'>('orders');
+function Commissions({ list, daily, challenges, story, open }: { list: HudSnapshot['commissions']; daily: HudSnapshot['daily']; challenges: HudSnapshot['challenges']; story: HudSnapshot['story']; open: HudSnapshot['unlocked'] }) {
+  const [tab, setTab] = useState<'valley' | 'orders' | 'challenges'>('valley');
   const stars = challenges.reduce((s, c) => s + c.stars, 0);
+  const m = useMovable('board', { minW: 240, minH: 160 });
   return (
-    <section className="panel commissions" aria-label="Commission board">
+    <section ref={m.ref} style={m.style} className="panel commissions" aria-label="Commission board">
+      <Grip m={m} label="the board" />
+      <SizeGrip m={m} label="the board" />
+      <BlossomBranch className="orn-board" length={100} seed={2} side="down" />
       <nav className="tabs board-tabs" role="tablist">
-        <button type="button" role="tab" aria-selected={tab === 'orders'} className={tab === 'orders' ? 'on' : ''} onClick={() => setTab('orders')}>Orders</button>
-        <button type="button" role="tab" aria-selected={tab === 'challenges'} className={tab === 'challenges' ? 'on' : ''} onClick={() => setTab('challenges')}>Challenges <small>{stars}/{challenges.length * 3}</small></button>
+        <button type="button" role="tab" aria-selected={tab === 'valley'} className={tab === 'valley' ? 'on' : ''} onClick={() => setTab('valley')}>Valley</button>
+        {open.orders && <button type="button" role="tab" aria-selected={tab === 'orders'} className={tab === 'orders' ? 'on' : ''} onClick={() => setTab('orders')}>Orders</button>}
+        {open.stars && <button type="button" role="tab" aria-selected={tab === 'challenges'} className={tab === 'challenges' ? 'on' : ''} onClick={() => setTab('challenges')} title="Challenges">Stars <small>{stars}/{challenges.length * 3}</small></button>}
       </nav>
-      {tab === 'orders' ? (
+      <div className="board-body">
+      {tab === 'valley' || (tab === 'orders' && !open.orders) || (tab === 'challenges' && !open.stars) ? <StoryTab story={story} /> : tab === 'orders' ? (
         <>
           <div className={`commission daily ${daily.done ? 'done' : ''}`}>
             <span className="label">Today's order · {daily.from}</span>
@@ -243,14 +317,18 @@ function Commissions({ list, daily, challenges }: { list: HudSnapshot['commissio
           ))}
         </>
       )}
+      </div>
     </section>
   );
 }
 
 function Inspector({ sel, game }: { sel: SelectionInfo; game: Game }) {
+  const place = useMovable('inspector');
   const r = sel.entity?.resource, m = sel.entity?.machine, w = sel.entity?.workshop, p = sel.parcel;
   return (
-    <aside className="panel inspector">
+    <aside ref={place.ref} style={place.style} className="panel inspector">
+      <Grip m={place} label="the info panel" />
+      <BlossomBranch className="orn-inspector" length={96} seed={6} side="down" />
       {sel.entity?.sprite && <img className="inspector-preview" src={game.thumbnail(sel.entity.sprite)} alt="" />}
       <h2>{sel.entity ? sel.entity.name : sel.tileName}</h2>
       <p className="muted">{sel.biome} · {sel.tileName} · tile {sel.tileX}, {sel.tileY}{sel.elevation > 1 ? ` · elevation ${sel.elevation}` : ''}</p>
@@ -306,6 +384,16 @@ function Inspector({ sel, game }: { sel: SelectionInfo; game: Game }) {
           <span className={w.problem ? 'muted' : ''}>{w.problem ?? <>Costs <Cost lines={w.cost} /></>}</span>
         </div>
       )}
+      {sel.entity?.owned && (
+        <div className="action-box owned">
+          <span className="label">Your building</span>
+          <div className="row">
+            <button type="button" onClick={() => game.moveSelected()}>Move</button>
+            <button type="button" className="btn-danger" onClick={() => { if (window.confirm(`Take down the ${sel.entity!.name}? You get half its materials back.`)) game.demolishSelected(); }}>Take down</button>
+          </div>
+          {sel.entity.owned.refund.length > 0 && <span className="muted">Taking it down returns <Cost lines={sel.entity.owned.refund} /></span>}
+        </div>
+      )}
       {p.locked && (
         <div className="action-box">
           <span className="label">Unclaimed land</span>
@@ -314,5 +402,29 @@ function Inspector({ sel, game }: { sel: SelectionInfo; game: Game }) {
         </div>
       )}
     </aside>
+  );
+}
+
+/** Milestones of this valley, with the photo taken when each was reached (photos are kept per browser). */
+function Album({ achievements, onBack }: { achievements: HudSnapshot['achievements']; onBack(): void }) {
+  const photos = new Map(readAlbum().map((p) => [p.id, p]));
+  return (
+    <>
+      <div className="row"><h2>Album</h2><button type="button" className="icon" onClick={onBack}>back</button></div>
+      <p className="muted">Every milestone is photographed when you reach it. Some dress Seedling up.</p>
+      <ul className="album">
+        {achievements.map((a) => {
+          const p = photos.get(a.id);
+          return (
+            <li key={a.id} className={a.done ? 'done' : ''}>
+              {a.done && p?.image ? <img src={p.image} alt="" /> : <span className="album-blank">{a.done ? 'No photo' : '?'}</span>}
+              <b>{a.done ? a.title : 'Not yet'}</b>
+              <span className="muted">{a.description}{a.cosmetic ? ` Reward: ${a.cosmetic}.` : ''}</span>
+              {a.done && p && <small>{p.day}</small>}
+            </li>
+          );
+        })}
+      </ul>
+    </>
   );
 }

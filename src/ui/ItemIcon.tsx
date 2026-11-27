@@ -14,11 +14,12 @@ export function ItemIcon({ id, explain = false }: { id: ResourceId; explain?: bo
   return <img className="item-icon" src={iconUrl(id)} alt={r?.name ?? id} title={explain && r ? `${r.name}: ${r.description}\n\n${r.use}` : r?.name} />;
 }
 
-/** The Spark: ROOTWORKS' one currency, a four-pointed seed of light. */
+/** The Spark: ROOTWORKS' one currency, a cherry blossom with a golden heart. */
 export function Spark() {
   return (
-    <svg className="spark-icon" viewBox="0 0 12 12" aria-hidden>
-      <path d="M6 0 L7.3 4.7 L12 6 L7.3 7.3 L6 12 L4.7 7.3 L0 6 L4.7 4.7 Z" />
+    <svg className="spark-icon" viewBox="-6 -6 12 12" aria-hidden>
+      {[0, 72, 144, 216, 288].map((a) => <ellipse key={a} cx="0" cy="-3" rx="2.3" ry="2.9" fill="#f4b3c9" stroke="#8a3a5c" strokeWidth=".6" transform={`rotate(${a})`} />)}
+      <circle r="1.5" fill="#f2c062" stroke="#8a5a1c" strokeWidth=".5" />
     </svg>
   );
 }

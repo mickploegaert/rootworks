@@ -1,5 +1,5 @@
 import { P } from '../palette.ts';
-import { PixelCanvas, blob, line, pick, shadowEllipse, type RGB } from '../pixel/PixelCanvas.ts';
+import { PixelCanvas, blob, line, pick, rect, shadowEllipse, type RGB } from '../pixel/PixelCanvas.ts';
 import { drawBox, drawCylinder, isoCanvas } from '../pixel/iso3d.ts';
 import type { Built } from './types.ts';
 
@@ -7,8 +7,9 @@ import type { Built } from './types.ts';
 const LOOK: readonly [number, number][] = [[1, 0.5], [-1, 0.5], [-1, -0.5], [1, -0.5]];
 
 /** What the robot is doing, as an animation. Frame counts per pose. */
-export type RobotPose = 'idle' | 'walk' | 'work' | 'celebrate' | 'error';
-export const ROBOT_POSES: Readonly<Record<RobotPose, number>> = { idle: 6, walk: 4, work: 4, celebrate: 4, error: 2 };
+export type RobotPose = 'idle' | 'walk' | 'work' | 'celebrate' | 'error' | 'sleep' | 'rest';
+/** `sleep`: powered down, slumped, eye shut (the intro). `rest`: sat down after a long wait, looking around. */
+export const ROBOT_POSES: Readonly<Record<RobotPose, number>> = { idle: 6, walk: 4, work: 4, celebrate: 4, error: 2, sleep: 2, rest: 4 };
 /** Sprout growth stages: the sprout on Seedling's head grows with each programming skill. */
 export const SPROUT_STAGES = 4;
 /** Where the basket's opening is, relative to the ground point, per facing: cargo is drawn there. */
@@ -40,9 +41,14 @@ function sprout(pc: PixelCanvas, x: number, y: number, stage: number, sway: numb
     pc.set(lx + side * 6, ly - 2, pick(LEAF, 6));
     line(pc, lx + side, ly - 0.5, lx + side * 5, ly - 1, pick(LEAF, 3)); // midrib
   }
-  if (stage >= 3) {
-    blob(pc, tipX, tipY - 1.5, 2.6, 2.2, P.flowers.slice(1, 3), { style: 'smooth' });
-    pc.set(tipX, tipY - 1, P.amber[5]);
+  if (stage >= 3) { // a cherry blossom: a round pink flower with notched petals round a golden heart, lit from the top left
+    const cy = tipY - 3;
+    for (let y = -3; y <= 3; y++) for (let x = -3; x <= 3; x++) {
+      const d = Math.hypot(x, y), a = Math.atan2(y, x);
+      if (d > 3.2 || (d > 2 && Math.cos(5 * (a + 0.31)) < -0.6)) continue;
+      pc.set(tipX + x, cy + y, d < 1.2 ? [178, 82, 118] : x + y < -1 ? [252, 214, 228] : x + y > 2 ? [218, 122, 158] : [240, 163, 191]);
+    }
+    pc.set(tipX, cy, P.amber[5]);
   }
 }
 
@@ -65,6 +71,51 @@ function face(pc: PixelCanvas, hx: number, hy: number, lx: number, eye: Eye, loo
   pc.set(ex - 1, ey - 2, [255, 248, 230]); pc.set(ex - 2, ey - 1, [255, 248, 230]);
 }
 
+/** How a pose moves the robot in a frame: shared with the renderer, so accessories sit exactly on the head. */
+export function poseMotion(facing: number, pose: RobotPose, frame: number) {
+  const front = Math.sign(LOOK[facing][0]);
+  const hop = pose === 'celebrate' ? [0, 2, 3, 1][frame] : 0;
+  const bob = pose === 'walk' ? frame % 2 : pose === 'idle' ? (frame === 2 || frame === 3 ? 1 : 0) : pose === 'work' ? (frame >= 2 ? 1 : 0) : 0;
+  const lift = hop - bob - (pose === 'sleep' ? 2 + frame : pose === 'rest' ? 3 : 0); // positive = up; asleep it sinks and slowly breathes
+  const lean = (pose === 'work' && frame >= 2) || pose === 'sleep' ? front : 0;
+  const shake = pose === 'error' ? (frame ? 1 : -1) : 0;
+  return { hop, lift, lean, shake };
+}
+
+/** Head centre relative to the robot's ground point, for a facing, pose and frame. */
+export function robotHead(facing: number, pose: RobotPose, frame: number): { x: number; y: number } {
+  const m = poseMotion(facing, pose, frame);
+  return { x: m.shake + m.lean, y: -28 - m.lift };
+}
+
+export type CosmeticId = 'goggles' | 'crown' | 'scarf';
+export const COSMETIC_IDS: readonly CosmeticId[] = ['goggles', 'crown', 'scarf'];
+
+/** An accessory for Seedling, drawn around a head centred at (14, 14) of a 28 x 28 canvas, per facing. */
+export function cosmeticCanvas(id: CosmeticId, facing: number): PixelCanvas {
+  const pc = new PixelCanvas(28, 28), cx = 14, cy = 14, [lx] = LOOK[facing], away = facing >= 2;
+  if (id === 'goggles') { // copper rims pushed up on the forehead, a leather strap round the head
+    for (let x = -9; x <= 9; x++) pc.set(cx + x, cy - 4 + (Math.abs(x) > 7 ? 1 : 0), pick(P.wood, 1.6));
+    if (!away) for (const dx of [-3, 3]) {
+      const gx = cx + dx + lx * 2;
+      blob(pc, gx, cy - 5, 2.6, 2.4, P.copper.slice(2, 6), { style: 'smooth' });
+      blob(pc, gx, cy - 5, 1.5, 1.4, P.glass.slice(2), { style: 'smooth' });
+      pc.set(gx - 1, cy - 6, [235, 250, 255]);
+    } else rect(pc, cx - 2 - lx * 2, cy - 6, 4, 3, () => pick(P.copper, 3)); // the buckle at the back
+  } else if (id === 'crown') { // a ring of leaves and small flowers round the sprout
+    for (let k = 0; k < 14; k++) {
+      const a = (k / 14) * Math.PI * 2, x = cx + Math.cos(a) * 7, y = cy - 8 + Math.sin(a) * 2.4;
+      blob(pc, x, y, 1.6, 1.1, P.leaf.slice(3, 6), { style: 'smooth' });
+      if (k % 3 === 0) { pc.set(x, y - 1, P.flowers[k % 2 ? 2 : 1]); pc.set(x + 1, y - 1, P.flowers[0]); }
+    }
+  } else { // a knitted scarf round the neck, its tail on the side away from the look
+    for (let x = -5; x <= 5; x++) for (let y = 0; y < 3; y++) pc.set(cx + x, cy + 6 + y + (Math.abs(x) > 3 ? 1 : 0), pick(P.brick, 3.8 - y * 0.6 + ((x + y) % 2 ? 0.4 : 0)));
+    for (let y = 0; y < 4; y++) for (let x = 0; x < 2; x++) pc.set(cx - lx * 4 + x, cy + 9 + y, pick(P.brick, 3 - y * 0.3 + (y % 2 ? 0.4 : 0))); // the loose end
+  }
+  pc.edgeDarken(0.65);
+  return pc;
+}
+
 /**
  * One frame of Seedling, the worker robot: a round cream body on two rubber treads, a wicker basket on its back,
  * a round head with one big eye under a copper brow, and a sprout in a copper socket that grows with its skills.
@@ -76,14 +127,10 @@ export function robotFrame(facing: number, pose: RobotPose, frame: number, stage
   const away = facing >= 2;
   const [lx] = LOOK[facing];
   const front = Math.sign(lx);
-  const walk = pose === 'walk', work = pose === 'work', err = pose === 'error', cheer = pose === 'celebrate';
+  const walk = pose === 'walk', work = pose === 'work', err = pose === 'error', cheer = pose === 'celebrate', sleep = pose === 'sleep', rest = pose === 'rest';
 
   // motion: the treads stay on the ground; body, head and arms carry the pose
-  const hop = cheer ? [0, 2, 3, 1][frame] : 0;
-  const bob = walk ? frame % 2 : pose === 'idle' ? (frame === 2 || frame === 3 ? 1 : 0) : work ? (frame >= 2 ? 1 : 0) : 0;
-  const lift = hop - bob; // positive = up
-  const lean = work && frame >= 2 ? front : 0;
-  const shake = err ? (frame ? 1 : -1) : 0;
+  const { hop, lift, lean, shake } = poseMotion(facing, pose, frame);
   shadowEllipse(b.shadow!, ox + 4, oy + 3, 14 - hop, 5, 85);
 
   const tread = (c: number) => {
@@ -110,7 +157,7 @@ export function robotFrame(facing: number, pose: RobotPose, frame: number, stage
     line(pc, ox + shake + bx - 5, oy + by - lift + 1, ox + shake + bx + 5, oy + by - lift + 1, pick(P.wood, 4.8)); // rim
   };
 
-  const light: readonly RGB[] = err ? P.brick.slice(3) : work ? P.glowTeal.slice(3) : cheer ? P.amber.slice(3) : P.amber.slice(2);
+  const light: readonly RGB[] = sleep ? P.slate.slice(1) : err ? P.brick.slice(3) : work ? P.glowTeal.slice(3) : cheer ? P.amber.slice(3) : P.amber.slice(2);
   tread(-0.26);
   if (!away) basket();
   // round body: a cream barrel with a copper belt, rivets and a status light on its front
@@ -135,6 +182,8 @@ export function robotFrame(facing: number, pose: RobotPose, frame: number, stage
     if (pose === 'idle' && frame === 4) hy -= 1;
     if (work && near) { const up = frame < 2; hx = sx + side * (up ? 4 : 6); hy = up ? sy - 6 + frame : sy + 4; }
     if (err) { hx = sx + side * 4; hy = sy - 5 + frame * 2; }
+    if (sleep) { hx = sx + side * 2; hy = sy + 9; } // arms hang
+    if (rest) { hx = sx + side * 5; hy = sy + 6; } // hands on the knees
     if (cheer) { hx = sx + side * 4; hy = sy - 9 - (frame % 2); }
     arm(pc, sx, sy, hx, hy, near);
     if (work && near) { // a wrench
@@ -151,8 +200,8 @@ export function robotFrame(facing: number, pose: RobotPose, frame: number, stage
   pc.set(hx - 9, hy, pick(P.copper, 4)); pc.set(hx + 9, hy, pick(P.copper, 2)); // ear bolts
 
   if (!away) {
-    const eye: Eye = pose === 'idle' && frame === 5 ? 'blink' : cheer || (work && frame >= 2) ? 'happy' : work ? 'focus' : err ? 'worried' : 'open';
-    face(pc, hx, hy, lx, eye, walk ? lx * 0.8 : 0.6 * lx);
+    const eye: Eye = (pose === 'idle' && frame === 5) || sleep ? 'blink' : cheer || (work && frame >= 2) ? 'happy' : work ? 'focus' : err ? 'worried' : 'open';
+    face(pc, hx, hy, lx, eye, walk ? lx * 0.8 : rest ? [-1.6, 0, 1.6, 0][frame] : 0.6 * lx); // resting, it looks about
     pc.set(hx + lx * 8.5, hy + 3.5, [232, 140, 120]); // rosy cheek
   } else {
     for (let k = 0; k < 3; k++) line(pc, hx - 3 - lx * 2, hy - 1 + k * 2, hx + 3 - lx * 2, hy - 1 + k * 2, pick(P.copper, 2.4)); // vent
