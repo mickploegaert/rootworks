@@ -146,6 +146,9 @@ export class Renderer {
   }
 
   /** Clouds, motes, butterflies on or off (reduced motion). */
+  /** The sprout on the robots' heads grows with the firmware tier. */
+  setRobotStage(tier: number): void { if (this.entityRenderer) this.entityRenderer.robotStage = tier; }
+
   setAmbient(on: boolean): void { this.ambient.top.visible = this.ambient.ground.visible = on; }
 
   /** A small preview image of a sprite, for menus. */

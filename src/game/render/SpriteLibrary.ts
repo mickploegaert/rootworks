@@ -2,7 +2,9 @@ import { Texture, TextureSource } from 'pixi.js';
 import { PixelCanvas, swayFrames } from './pixel/PixelCanvas.ts';
 import * as nature from './sprites/nature.ts';
 import * as bld from './sprites/buildings.ts';
-import { robotFrame } from './sprites/robot.ts';
+import { ROBOT_POSES, SPROUT_STAGES, robotFrame, type RobotPose } from './sprites/robot.ts';
+import { itemIcon } from './sprites/items.ts';
+import { RESOURCE_IDS, type ResourceId } from '../resources/ResourceDefs.ts';
 import { butterflyTexture, cloudTexture, glintTexture, moteTexture, smokeTexture, glowTexture } from './sprites/fx.ts';
 import type { Built, SpriteFx } from './sprites/types.ts';
 
@@ -52,11 +54,15 @@ const BUILDERS: Record<string, () => Built> = {
   workbench: bld.workbench, lab_building: bld.labBuilding, sawmill: bld.sawmill, kiln: bld.kiln,
 };
 
+export const robotSprite = (facing: number, pose: RobotPose, stage: number) => `robot_${facing}_${pose}_${stage}`;
+
 /** Builds every texture once at startup. All art is painted procedurally: no image files. */
 export class SpriteLibrary {
   private readonly assets = new Map<string, SpriteAsset>();
   private readonly glows = new Map<string, Texture>();
   private readonly thumbs = new Map<string, string>();
+  /** Item icons, the same pixels the UI shows. */
+  readonly items = new Map<ResourceId, Texture>();
   readonly smoke: Texture;
   readonly glint: Texture;
   readonly mote: Texture;
@@ -67,7 +73,12 @@ export class SpriteLibrary {
   constructor() {
     TextureSource.defaultOptions.scaleMode = 'nearest';
     for (const [id, make] of Object.entries(BUILDERS)) this.register(id, make());
-    for (let f = 0; f < 4; f++) for (let a = 0; a < 2; a++) this.register(`robot_${f}_${a}`, robotFrame(f, a));
+    // Seedling: every facing x pose x sprout stage is one looping animation (see robotSprite)
+    for (let st = 0; st < SPROUT_STAGES; st++) for (let f = 0; f < 4; f++) for (const pose of Object.keys(ROBOT_POSES) as RobotPose[]) {
+      const frames = Array.from({ length: ROBOT_POSES[pose] }, (_, k) => robotFrame(f, pose, k, st));
+      this.register(robotSprite(f, pose, st), { ...frames[0], frames: frames.slice(1).map((b) => b.pc) });
+    }
+    for (const id of RESOURCE_IDS) this.items.set(id, toTexture(itemIcon(id)));
     this.smoke = toTexture(smokeTexture());
     this.glint = toTexture(glintTexture(0xffe8b0));
     this.mote = toTexture(moteTexture(0xfff2b8));

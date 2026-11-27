@@ -10,11 +10,24 @@ export interface HostLog {
 
 const resName = (id: string) => RESOURCES[id as ResourceId]?.name ?? id;
 
+/** What to try next, for the failures beginners hit most. Matched on the start of the robot's error. */
+const TIPS: [string, string][] = [
+  ['no resource deposit there', 'Seedling must stand next to a deposit first: try go_to("tree") or go_to("scrap") on the line before.'],
+  ['not next to the deposit', 'Walk there first with go_to("tree") (or "stone", "scrap").'],
+  ['inventory is full', 'The cargo hold is full: deposit() it at storage, then harvest again.'],
+  ['deposit is depleted', 'This one is used up. go_to() the same kind again to find the next one.'],
+  ['no machine or storage next to', 'Walk to the machine first, for example go_to("workbench").'],
+  ['the robot is carrying nothing', 'Harvest something first, or take() it from storage.'],
+  ['nothing to deposit', 'The cargo hold is empty: harvest() something first.'],
+  ['there is no reachable', 'Build it first (Build menu), or check its name in Commands & help.'],
+];
+
 function friendly(r: CommandResult): string {
   const e = r.error ?? 'failed';
-  if (e === 'blocked') return 'the way is blocked (edge of the island, water, an object, or a slope too steep)';
+  if (e === 'blocked') return 'the way is blocked (edge of the island, water, an object, or a slope too steep). Tip: go_to() finds a way around for you.';
   if (e === 'stopped') return 'stopped';
-  return e;
+  const tip = TIPS.find(([start]) => e.startsWith(start));
+  return tip ? `${e}. Tip: ${tip[1]}` : e;
 }
 
 function int(name: string, label: string, v: HostValue): number {
@@ -31,6 +44,18 @@ export function describe(v: HostValue): string {
   return String(v);
 }
 
+/** Friendly names players type, mapped to the game's ids. Resource names follow the HUD ("Timber", "Scrap Metal"). */
+const PLACE_ALIASES: Record<string, string> = {
+  wood: 'wood', tree: 'wood', trees: 'wood', timber: 'wood', log: 'wood', logs: 'wood',
+  stone: 'stone', stones: 'stone', rock: 'stone', rocks: 'stone', fieldstone: 'stone', boulder: 'stone',
+  scrap: 'scrap', scrap_metal: 'scrap', metal: 'scrap', junk: 'scrap',
+  iron: 'iron_ore', iron_ore: 'iron_ore', copper: 'copper_ore', copper_ore: 'copper_ore',
+  storage: 'storage', depot: 'storage', home: 'storage',
+  workbench: 'workbench', bench: 'workbench', sawmill: 'sawmill', kiln: 'kiln', lab: 'lab', research_lab: 'lab',
+};
+export const PLACE_HINT = '"tree", "stone", "scrap", "iron", "copper", "storage", "workbench", "sawmill", "kiln", "lab"';
+export const placeAlias = (p: string): string | null => PLACE_ALIASES[p.trim().toLowerCase().replace(/[\s-]+/g, '_')] ?? null;
+
 /** Firmware tiers by number. */
 export const FIRMWARE_NAMES = ['Boot', 'Counter', 'Sense', 'Loop'] as const;
 
@@ -42,10 +67,10 @@ export const FIRMWARE_NAMES = ['Boot', 'Counter', 'Sense', 'Loop'] as const;
 export function createHostFunctions(cmd: RobotCommands, log: HostLog, firmware: () => number = () => 99): Map<string, HostFunction> {
   const fns = new Map<string, HostFunction>();
   /** `tier`: firmware needed (gates are identical in Guided and Engineer mode). `optional`: trailing params that may be left out. */
-  const def = (name: string, params: string[], doc: string, call: (args: HostValue[]) => HostValue | Pending, opts: { tier?: number; optional?: number } = {}) => {
+  const def = (name: string, params: string[], doc: string, call: (args: HostValue[]) => HostValue | Pending, opts: { tier?: number; optional?: number; example?: string } = {}) => {
     const max = params.length, min = max - (opts.optional ?? 0), tier = opts.tier ?? 0;
     fns.set(name, {
-      name, params, doc,
+      name, params, doc, tier, example: opts.example ?? `${name}()`,
       call: (args) => {
         if (firmware() < tier) {
           throw new ScriptError('runtime', `${name}() needs the ${FIRMWARE_NAMES[tier]} firmware (T${tier}). Research it at the Lab to unlock it.`);
@@ -77,24 +102,24 @@ export function createHostFunctions(cmd: RobotCommands, log: HostLog, firmware: 
       throw new ScriptError('runtime', `move() expects "north", "south", "east" or "west", but got ${describe(d)}.`);
     }
     return act(`move("${d.toLowerCase()}")`, cmd.move(d.toLowerCase() as Direction));
-  });
+  }, { example: 'move("north")' });
   def('move_to', ['x', 'y'], 'Walk to tile (x, y) along the shortest route. Returns True on arrival.', ([x, y]) => {
     const tx = int('move_to', 'x', x), ty = int('move_to', 'y', y);
     return act(`move_to(${tx}, ${ty})`, cmd.moveTo(tx, ty));
-  });
+  }, { example: 'move_to(128, 130)' });
   def('move_to_storage', [], 'Walk next to the storage depot. Returns True on arrival.', () => act('move_to_storage()', cmd.returnToStorage()));
 
   // resources
   def('harvest', [], 'Harvest the deposit next to the robot (the one in front first). Returns True if anything was collected.', () =>
     act('harvest()', cmd.harvest(), (r) => `collected ${r.data?.amount} ${resName(String(r.data?.resource))}${r.data?.remaining === 0 ? ' (deposit used up)' : ''}`));
-  def('can_harvest', [], 'True if a deposit with stock is next to the robot and its cargo has room.', () => cmd.canHarvestHere(), { tier: 2 });
+  def('can_harvest', [], 'True if a deposit with stock is next to the robot and its cargo has room.', () => cmd.canHarvestHere(), { tier: 2, example: 'while can_harvest():' });
   def('get_resource_type', [], 'Resource of the adjacent deposit ("wood", "stone", "iron_ore", "copper_ore", "scrap"), or None.', () => cmd.adjacentResource(), { tier: 2 });
 
   // inventory
-  def('get_inventory', [], 'Cargo as a dictionary, e.g. {"wood": 4}.', () => cmd.inventory() as HostValue, { tier: 1 });
+  def('get_inventory', [], 'Cargo as a dictionary, e.g. {"wood": 4}.', () => cmd.inventory() as HostValue, { tier: 1, example: 'cargo = get_inventory()' });
   def('get_inventory_capacity', [], 'How many units the robot can carry in total.', () => cmd.capacity().max, { tier: 1 });
   def('get_inventory_count', [], 'How many units the robot is carrying.', () => cmd.capacity().used, { tier: 1 });
-  def('is_inventory_full', [], 'True when the robot cannot carry any more.', () => cmd.capacity().used >= cmd.capacity().max, { tier: 2 });
+  def('is_inventory_full', [], 'True when the robot cannot carry any more.', () => cmd.capacity().used >= cmd.capacity().max, { tier: 2, example: 'if is_inventory_full():' });
 
   // storage: walks to the depot if needed, then unloads
   def('deposit', [], 'Walk to storage and unload all cargo. Returns True if anything was stored.', () => {
@@ -116,7 +141,7 @@ export function createHostFunctions(cmd: RobotCommands, log: HostLog, firmware: 
   });
 
   // robot information
-  def('get_position', [], 'The robot\'s tile as [x, y].', () => { const p = cmd.position(); return [p.x, p.y]; }, { tier: 1 });
+  def('get_position', [], 'The robot\'s tile as [x, y].', () => { const p = cmd.position(); return [p.x, p.y]; }, { tier: 1, example: 'x, y = get_position()' });
   def('get_robot_status', [], 'What the robot is doing: "idle", "moving", "harvesting", "returning" or "depositing".', () => cmd.state(), { tier: 2 });
 
   // machines
@@ -134,11 +159,18 @@ export function createHostFunctions(cmd: RobotCommands, log: HostLog, firmware: 
   def('take', ['item', 'amount'], 'Take products from the machine (or storage) next to the robot. take() takes everything that fits.', ([item, n]) => {
     const it = itemArg('take', item), amt = amountArg('take', n);
     return act(`take(${it ? `"${it}"` : ''}${amt !== undefined ? `, ${amt}` : ''})`, cmd.take(it, amt), (r) => `took ${listMoved(r)} from the ${String(r.data?.from)}`);
-  }, { optional: 2 });
-  def('go_to', ['place'], 'Walk next to the nearest "storage", "workbench", "sawmill", "kiln" or "lab", or the nearest deposit of a resource ("wood", "stone", "scrap"...). Returns True on arrival.', ([p]) => {
-    if (typeof p !== 'string') throw new ScriptError('runtime', `go_to() needs a place name, like "sawmill", but got ${describe(p)}.`);
-    return act(`go_to("${p}")`, cmd.goTo(p));
-  });
+  }, { optional: 2, example: 'take("research_kit")' });
+  def('go_to', ['place', 'y'], 'Walk next to a place: the nearest "tree", "stone", "scrap", "iron", "copper", "storage", "workbench", "sawmill", "kiln" or "lab". Or give a tile: go_to(12, 8). Returns True on arrival.', ([p, y]) => {
+    if (typeof p === 'number' || Array.isArray(p)) {
+      const [px, py] = Array.isArray(p) ? p : [p, y];
+      const tx = int('go_to', 'x', px ?? null), ty = int('go_to', 'y', py ?? null);
+      return act(`go_to(${tx}, ${ty})`, cmd.approach(tx, ty));
+    }
+    if (typeof p !== 'string') throw new ScriptError('runtime', `go_to() needs a place name in quotes, like go_to("tree"), but got ${describe(p)}.`);
+    const place = placeAlias(p);
+    if (!place) throw new ScriptError('runtime', `go_to() doesn't know a place called "${p}". Try one of: ${PLACE_HINT}.`);
+    return act(`go_to("${p}")`, cmd.goTo(place));
+  }, { optional: 1, example: 'go_to("tree")' });
   def('get_nearby', [], 'Name of the machine or storage next to the robot ("sawmill", "storage"...), or None.', () => cmd.adjacentPlace(), { tier: 2 });
   return fns;
 }

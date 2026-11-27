@@ -118,7 +118,7 @@ export function MainMenu({ slots, settings, onSetting, onStart, onDelete }: Prop
           )}
           {sheet === 'tutorial' && (
             <SheetBody title="Tutorial">
-              <p>You never steer a robot by hand: you write its program. The tutorial walks you from a first <code>move("north")</code> to crafting research kits and unlocking your first firmware, one step at a time.</p>
+              <p>You never steer a robot by hand: you write its program. The tutorial walks you from a first <code>go_to("scrap")</code> to crafting research kits and unlocking your first firmware, one step at a time.</p>
               <div className="sheet-actions column">
                 {unfinishedTutorial && <button type="button" className="slot-main" onClick={() => onStart({ slot: unfinishedTutorial.id, fresh: false, tutorial: true })}>Resume in slot {unfinishedTutorial.id} (step {unfinishedTutorial.tutorialSteps + 1} of {TUTORIAL_STEPS})</button>}
                 <button type="button" className={unfinishedTutorial ? 'slot-plain' : 'slot-main'} onClick={() => newGame(true)}>Start a fresh tutorial game{empty ? ` in slot ${empty}` : ''}</button>

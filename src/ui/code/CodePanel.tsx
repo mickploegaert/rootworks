@@ -2,11 +2,11 @@ import { useEffect, useRef, useState } from 'react';
 import type { ConsoleEntry, Game, ProgramStatus } from '../../game/Game.ts';
 import type { ProgramStore } from '../../game/save/ProgramStore.ts';
 import { LANGUAGES, LANGUAGE_IDS } from '../../game/scripting/adapters.ts';
-import { PYTHON_EXAMPLES, STARTER_CODE } from '../../game/scripting/templates.ts';
+import { CONCEPTS, PYTHON_EXAMPLES, STARTER_CODE } from '../../game/scripting/templates.ts';
 import { FIRMWARE_NAMES } from '../../game/scripting/hostApi.ts';
 import type { LanguageId } from '../../game/scripting/types.ts';
 import type { TutorialStep } from '../../game/tutorial/Tutorial.ts';
-import { CodeEditor } from './CodeEditor.tsx';
+import { CodeEditor, type EditorApi } from './CodeEditor.tsx';
 
 const CONSOLE_LIMIT = 300;
 const SAVE_DELAY = 300;
@@ -36,12 +36,16 @@ export function CodePanel({ game, store, tutorial, showTutorial, firmware, open,
   const [status, setStatus] = useState<ProgramStatus>(game.programStatus);
   const [log, setLog] = useState<ConsoleEntry[]>([]);
   const saveTimer = useRef<number>(0);
+  const editor = useRef<EditorApi | null>(null);
+  const [palette, setPalette] = useState(false);
+  const [welcome, setWelcome] = useState(true);
   const consoleEnd = useRef<HTMLDivElement>(null);
 
   useEffect(() => {
     const offs = [
       game.events.on('program', setStatus),
       game.events.on('console', (e) => setLog((l) => [...l.slice(-(CONSOLE_LIMIT - 1)), e])),
+      game.events.on('insertCode', (snippet) => insert.current(snippet)),
     ];
     return () => offs.forEach((f) => f());
   }, [game]);
@@ -78,8 +82,17 @@ export function CodePanel({ game, store, tutorial, showTutorial, firmware, open,
     store.setCode(language, next);
   };
 
+  /** Add a snippet to the program: below the cursor when the editor is open, else at the end. */
+  const insert = useRef((_: string) => {});
+  insert.current = (snippet: string) => {
+    if (!open) onToggle();
+    if (editor.current) { editor.current.insert(snippet); return; }
+    edit(`${code.trimEnd()}\n${snippet}\n`);
+  };
+
   const active = status.state === 'running' || status.state === 'paused';
   const run = () => { flush.current(); game.runProgram(language, code); };
+  const step = () => { flush.current(); game.stepProgram(language, code); };
   const tutorialDone = tutorial.every((s) => s.done);
   const examples = PYTHON_EXAMPLES.filter((e) => !guided || e.tier <= firmware);
   const lockedExamples = PYTHON_EXAMPLES.length - examples.length;
@@ -131,26 +144,24 @@ export function CodePanel({ game, store, tutorial, showTutorial, firmware, open,
         )}
       </div>
 
+      {language === 'python' && (
+        <button type="button" className={`palette-toggle ${palette ? 'on' : ''}`} onClick={() => setPalette(!palette)} aria-expanded={palette}>
+          {palette ? 'Hide commands' : 'Commands & help'}
+        </button>
+      )}
+      {palette && language === 'python' && <Palette game={game} firmware={guided ? firmware : 99} onInsert={(c) => insert.current(c)} />}
+
       {!LANGUAGES[language].available && (
         <p className="code-note">{LANGUAGES[language].name} is still being built, so this program can't run yet. Your code here is saved separately. Switch to Python to run programs.</p>
       )}
 
-      {showTutorial && !tutorialDone && language === 'python' && (
-        <ol className="tutorial" aria-label="Tutorial">
-          {!tutorial[0].done && code !== STARTER_CODE.python && (
-            <li className="tutorial-load"><button type="button" className="icon" disabled={active} onClick={() => replaceCode(STARTER_CODE.python, 'the Lesson 1 program')}>Load the Lesson 1 program</button></li>
-          )}
-          {tutorial.map((s) => (
-            <li key={s.id} className={s.done ? 'done' : ''}>
-              <span className="check" aria-hidden>{s.done ? '■' : '□'}</span>{s.label} <code>{s.hint}</code>
-            </li>
-          ))}
-        </ol>
-      )}
+      {showTutorial && !tutorialDone && !palette && language === 'python' && (welcome && !tutorial[0].done
+        ? <Welcome onStart={() => setWelcome(false)} />
+        : <Lesson steps={tutorial} onInsert={(c) => insert.current(c)} />)}
 
       <div className="code-body">
         <CodeEditor language={language} value={code} onChange={edit} onRun={() => !active && run()} readOnly={active}
-          activeLine={active ? status.line : null} errorLine={status.state === 'error' ? status.errorLine : null} />
+          activeLine={active ? status.line : null} errorLine={status.state === 'error' ? status.errorLine : null} apiRef={editor} />
       </div>
 
       <div className="code-actions">
@@ -158,6 +169,7 @@ export function CodePanel({ game, store, tutorial, showTutorial, firmware, open,
         {status.state === 'paused'
           ? <button type="button" onClick={() => game.resumeProgram()}>Resume</button>
           : <button type="button" onClick={() => game.pauseProgram()} disabled={status.state !== 'running'}>Pause</button>}
+        <button type="button" onClick={step} disabled={status.state === 'running'} title="Run one line, then pause: see exactly what each line does">Step</button>
         <button type="button" onClick={() => game.stopProgram()} disabled={!active}>Stop</button>
         <button type="button" className="right" onClick={() => replaceCode(STARTER_CODE[language], 'the starter program')} disabled={active}>Reset</button>
       </div>
@@ -174,5 +186,73 @@ export function CodePanel({ game, store, tutorial, showTutorial, firmware, open,
         </div>
       </div>
     </section>
+  );
+}
+
+/** First contact: who the robot is, what the player is here for, and what to do first. */
+function Welcome({ onStart }: { onStart(): void }) {
+  return (
+    <div className="welcome" role="note">
+      <b>Meet Seedling</b>
+      <p>Seedling is a salvaged robot, and your only helper in this overgrown valley. You can't pick things up yourself: you <em>write programs</em>, and Seedling carries them out, line by line.</p>
+      <p>Your goal: gather resources, build machines and research new tricks, until the valley runs by itself.</p>
+      <button type="button" className="primary" onClick={onStart}>Show me the first lesson</button>
+    </div>
+  );
+}
+
+/** The current lesson only: what, why, how, and the code to try. Earlier and later steps stay folded away. */
+function Lesson({ steps, onInsert }: { steps: TutorialStep[]; onInsert(code: string): void }) {
+  const [all, setAll] = useState(false);
+  const i = steps.findIndex((s) => !s.done), s = steps[i];
+  if (!s) return null;
+  return (
+    <section className="lesson" aria-label="Tutorial">
+      <div className="lesson-head">
+        <span className="label">Lesson {i + 1} of {steps.length}</span>
+        <span className="dots" aria-hidden>{steps.map((x, k) => <i key={x.id} className={x.done ? 'done' : k === i ? 'now' : ''} />)}</span>
+        <button type="button" className="icon" onClick={() => setAll(!all)} aria-expanded={all}>{all ? 'less' : 'all'}</button>
+      </div>
+      <b className="lesson-goal">{s.label}</b>
+      <p className="lesson-why">{s.why}</p>
+      <p className="lesson-how">{s.how}</p>
+      {s.code && (
+        <div className="snippet">
+          <pre>{s.code}</pre>
+          <button type="button" onClick={() => onInsert(s.code!)} title="Add this code to your program">Insert</button>
+        </div>
+      )}
+      {all && (
+        <ol className="lesson-all">
+          {steps.map((x) => <li key={x.id} className={x.done ? 'done' : ''}>{x.label}</li>)}
+        </ol>
+      )}
+    </section>
+  );
+}
+
+/** Every command and Python idea, with what it does and a ready example. Locked ones say what unlocks them. */
+function Palette({ game, firmware, onInsert }: { game: Game; firmware: number; onInsert(code: string): void }) {
+  const [commands] = useState(() => game.commandReference());
+  const [q, setQ] = useState('');
+  const match = (t: string) => t.toLowerCase().includes(q.trim().toLowerCase());
+  const row = (key: string, code: string, doc: string, tier: number) => {
+    const locked = tier > firmware;
+    return (
+      <li key={key} className={locked ? 'locked' : ''}>
+        <code>{code.split('\n')[0]}{code.includes('\n') ? ' ...' : ''}</code>
+        <span className="doc">{doc}{locked && <em> Unlocks with {FIRMWARE_NAMES[tier]} firmware (T{tier}).</em>}</span>
+        <button type="button" className="icon" disabled={locked} onClick={() => onInsert(code)}>Insert</button>
+      </li>
+    );
+  };
+  return (
+    <div className="palette">
+      <input type="search" placeholder="Search commands..." value={q} onChange={(e) => setQ(e.target.value)} aria-label="Search commands" />
+      <span className="label">Robot commands</span>
+      <ul>{commands.filter((c) => match(c.name + c.doc)).map((c) => row(c.name, c.example, c.doc, c.tier))}</ul>
+      <span className="label">Python</span>
+      <ul>{CONCEPTS.filter((c) => match(c.title + c.doc)).map((c) => row(c.title, c.code, c.doc, c.tier))}</ul>
+    </div>
   );
 }

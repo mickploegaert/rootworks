@@ -1,6 +1,8 @@
 import { useEffect, useState } from 'react';
 import type { RegionId } from '../game/world/regions.ts';
 import { WorldMap } from './WorldMap.tsx';
+import { ItemIcon } from './ItemIcon.tsx';
+import type { ResourceId } from '../game/resources/ResourceDefs.ts';
 import type { CatalogEntry, Game, HudSnapshot, ResearchView, ResourceLine, SelectionInfo } from '../game/Game.ts';
 import { FIRMWARE_NAMES } from '../game/scripting/hostApi.ts';
 import type { SlotId } from '../game/save/GameSave.ts';
@@ -50,7 +52,7 @@ export function Hud({ hud, onBuild, thumbnail, onMenu, game, settings, onSetting
           Map <small>{hud.region.name}</small>
         </button>
         <button type="button" className={`research-toggle ${researchOpen ? 'on' : ''}`} onClick={() => setResearchOpen(!researchOpen)} aria-expanded={researchOpen}>
-          Research <small>T{rv.firmware} {FIRMWARE_NAMES[rv.firmware] ?? ''}{current ? ` · ${current.name} ${Math.round(rv.progress * 100)}%` : ''}</small>
+          Research <small title={current ? `Researching ${current.name}` : undefined}>T{rv.firmware} {current ? `· ${current.name} ${Math.round(rv.progress * 100)}%` : FIRMWARE_NAMES[rv.firmware] ?? ''}</small>
         </button>
         <button type="button" className="icon new-game" onClick={() => setPaused('menu')} title="Settings, save and quit">Menu</button>
       </header>
@@ -90,17 +92,14 @@ export function Hud({ hud, onBuild, thumbnail, onMenu, game, settings, onSetting
   );
 }
 
-function Swatch({ color }: { color: number }) {
-  return <i className="swatch" style={{ background: hex(color) }} />;
-}
 
 function StorageBar({ lines }: { lines: ResourceLine[] }) {
   return (
     <section className="panel storage" aria-label="Stored resources">
       <span className="label">Storage</span>
       {lines.map((l) => (
-        <span key={l.id} className={`res ${l.amount ? '' : 'empty'}`} title={l.name}>
-          <Swatch color={l.color} />{l.name}<b>{l.amount}</b>
+        <span key={l.id} className={`res ${l.amount ? '' : 'empty'}`}>
+          <ItemIcon id={l.id} explain /><span className="res-name">{l.name}</span><b>{l.amount}</b>
         </span>
       ))}
     </section>
@@ -117,7 +116,7 @@ function RobotPanel({ robot, log }: { robot: HudSnapshot['robot']; log: HudSnaps
       <div className="row cargo-head"><span className="label">Cargo</span><span>{robot.used} / {robot.capacity}</span></div>
       <div className="bar"><div style={{ width: `${pct}%` }} className={pct >= 100 ? 'full' : ''} /></div>
       <div className="cargo">
-        {robot.cargo.length ? robot.cargo.map((l) => <span key={l.id} className="res"><Swatch color={l.color} />{l.name}<b>{l.amount}</b></span>)
+        {robot.cargo.length ? robot.cargo.map((l) => <span key={l.id} className="res"><ItemIcon id={l.id} explain />{l.name}<b>{l.amount}</b></span>)
           : <span className="muted">empty</span>}
       </div>
       {log.length > 0 && (
@@ -166,7 +165,7 @@ function BuildMenu({ catalog, build, onBuild, thumbnail }: { catalog: CatalogEnt
                   {c.locked
                     ? <span className="lock">Research: {c.locked}</span>
                     : <span className={`cost ${afford ? '' : 'short'}`}>
-                        {c.cost.map((x) => <span key={x.id} className={x.have >= x.amount ? '' : 'miss'}><Swatch color={x.color} />{x.amount}</span>)}
+                        {c.cost.map((x) => <span key={x.id} className={x.have >= x.amount ? '' : 'miss'}><ItemIcon id={x.id} />{x.amount}</span>)}
                       </span>}
                 </button>
               );
@@ -182,7 +181,7 @@ function BuildMenu({ catalog, build, onBuild, thumbnail }: { catalog: CatalogEnt
 }
 
 function Cost({ lines }: { lines: ResourceLine[] }) {
-  return <span className="costs">{lines.map((l) => <span key={l.id} className="res"><Swatch color={l.color} />{l.amount} {l.name}</span>)}</span>;
+  return <span className="costs">{lines.map((l) => <span key={l.id} className="res"><ItemIcon id={l.id} explain />{l.amount} {l.name}</span>)}</span>;
 }
 
 function Commissions({ list }: { list: HudSnapshot['commissions'] }) {
@@ -233,10 +232,22 @@ function Inspector({ sel, game }: { sel: SelectionInfo; game: Game }) {
       {sel.entity && <p>{sel.entity.description}</p>}
       {r && (
         <>
-          <div className="row"><span><Swatch color={r.color} />{r.name}</span><b>{r.amount} / {r.max}</b></div>
+          <div className="row"><span className="res"><ItemIcon id={r.id as ResourceId} explain />{r.name}</span><b>{r.amount} / {r.max}</b></div>
           <div className="bar"><div style={{ width: `${(r.amount / r.max) * 100}%`, background: hex(r.color) }} /></div>
           <p className="muted">{r.depleted ? 'Depleted.' : `${r.yieldPerAction} per harvest · ${r.harvestTime.toFixed(1)} s`}</p>
+          <p className="use"><b>What it's for:</b> {r.use}</p>
         </>
+      )}
+      {sel.entity?.research && <p className="use">{sel.entity.research}</p>}
+      {sel.entity?.program && (
+        <div className="program-this">
+          <span className="label">Program this</span>
+          <div className="snippet">
+            <pre>{sel.entity.program.code}</pre>
+            <button type="button" onClick={() => game.insertCode(sel.entity!.program!.code)} title="Add this code to your program">Insert</button>
+          </div>
+          <p className="muted">{sel.entity.program.note}</p>
+        </div>
       )}
       {sel.entity?.construction !== undefined && (
         <>

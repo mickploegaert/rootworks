@@ -63,7 +63,7 @@ export class VM implements ProgramInstance {
       try {
         switch (op) {
           case Op.STMT:
-            if (this.executed >= budget) { f.pc--; return { kind: 'budget' }; }
+            if (this.executed >= budget) { f.pc--; this.line = line; return { kind: 'budget' }; } // paused here: show the line that runs next
             this.executed++;
             this.line = line;
             break;

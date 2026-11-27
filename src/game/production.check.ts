@@ -3,6 +3,7 @@ import assert from 'node:assert/strict';
 import { RobotCommands, type CommandHandle } from './api/RobotCommands.ts';
 import { EntityManager } from './entities/EntityManager.ts';
 import { Machine } from './entities/Machine.ts';
+import { ResourceNode } from './entities/ResourceNode.ts';
 import { Robot } from './entities/Robot.ts';
 import { StorageDepot } from './entities/StorageDepot.ts';
 import { LANGUAGES } from './scripting/adapters.ts';
@@ -173,5 +174,41 @@ const ticks = (sim: Simulation, seconds: number) => { for (let i = 0; i < second
   robot.inventory.add('research_kit', 1);
   robot.destination = lab; robot.facing = 2;
   assert.equal(run(sim, api.put()).data?.into, 'lab');
+}
+
+// ---------------------------------------------------------------- beginner movement: go_to("tree"), go_to(x, y), harvest() takes the go_to target
+{
+  const { sim, robot } = field();
+  const tree = new ResourceNode(10, 6, 'oak_0', 'wood', 20), pile = new ResourceNode(10, 7, 'scrap_0', 'scrap', 20);
+  sim.entities.add(tree); sim.entities.add(pile);
+  const out: string[] = [];
+  const host = { functions: createHostFunctions(new RobotCommands(sim, robot), { action() {}, result() {} }, () => 0), print: (t: string) => out.push(t) };
+  const exec = (src: string) => {
+    const runner = new ProgramRunner(LANGUAGES.python.compile(src), host);
+    let err: ScriptError | null = null;
+    runner.events.on('error', (e) => { err = e; });
+    for (let i = 0; i < 60 * 60 && runner.isActive; i++) { runner.tick(); sim.update(1 / 60); }
+    return err as ScriptError | null;
+  };
+  assert.equal(exec('print(go_to("Tree"))\nharvest()'), null);
+  assert.equal(out.at(-1), 'True');
+  assert.ok(robot.inventory.get('wood') > 0 && robot.inventory.get('scrap') === 0, 'harvest() picks the tree go_to went to, not the pile beside it');
+  assert.equal(exec('go_to(10, 7)\nharvest()'), null);
+  assert.ok(robot.inventory.get('scrap') > 0, 'go_to(x, y) walks next to that exact deposit');
+  assert.equal(exec('go_to([4, 6])'), null, 'a position list from get_position() works too');
+  assert.match(exec('go_to("treee")')!.message, /doesn't know a place called "treee". Try one of: "tree"/);
+}
+
+// ---------------------------------------------------------------- kits in a Lab never sit unexplained: no project picked starts the first open one
+{
+  const { sim } = field();
+  const lab = new Machine(9, 3, 'lab_building', 'lab', 'Research Lab', '', 2, 2);
+  sim.entities.add(lab);
+  const picked: string[] = [];
+  sim.research.events.on('autoPicked', (n) => picked.push(n.id));
+  lab.input.add('research_kit', 2);
+  ticks(sim, 9);
+  assert.deepEqual(picked, ['counter']);
+  assert.ok(sim.research.isDone('counter'));
 }
 console.log('production ok');

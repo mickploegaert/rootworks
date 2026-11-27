@@ -10,7 +10,8 @@ import { Robot } from '../entities/Robot.ts';
 import { RESOURCES, type ResourceId } from '../resources/ResourceDefs.ts';
 import { RobotState } from '../robot/RobotState.ts';
 import type { World } from '../world/World.ts';
-import type { SpriteAsset, SpriteLibrary } from './SpriteLibrary.ts';
+import { robotSprite, type SpriteAsset, type SpriteLibrary } from './SpriteLibrary.ts';
+import type { RobotPose } from './sprites/robot.ts';
 
 interface Particle { s: Sprite; vx: number; vy: number; age: number; life: number; gravity: number }
 interface Smoke { x: number; y: number; rate: number; puffs: { s: Sprite; age: number; life: number }[]; timer: number }
@@ -28,6 +29,9 @@ interface View {
   depleted: boolean;
   /** Displayed elevation in px (robots ease between levels). */
   lift: number;
+  /** Robots: time until which the robot shows its error reaction, and the cargo icon floating above it. */
+  upsetUntil?: number;
+  cargo?: Sprite;
   fxTimer: number;
   /** Construction drone hovering over a building site. */
   drone?: Sprite;
@@ -43,6 +47,9 @@ export class EntityRenderer {
   readonly shadows = new Container();
   readonly bodies = new Container();
   readonly fx = new Container();
+  /** Sprout growth on the robots' heads: the firmware tier. */
+  robotStage = 0;
+  private time = 0;
   private readonly views = new Map<number, View>();
   private readonly particles: Particle[] = [];
 
@@ -86,7 +93,7 @@ export class EntityRenderer {
 
   private add(e: Entity): void {
     const isRobot = e instanceof Robot;
-    const asset = isRobot ? this.lib.get('robot_1_0') : this.lib.get(e.spriteId);
+    const asset = isRobot ? this.lib.get(robotSprite(1, 'idle', 0)) : this.lib.get(e.spriteId);
     const body = new Sprite(asset.frames[0]);
     body.anchor.set(asset.anchorX, asset.anchorY);
     this.bodies.addChild(body);
@@ -202,20 +209,36 @@ export class EntityRenderer {
 
   private updateRobot(v: View, r: Robot, t: number, dt: number): void {
     const moving = r.state === RobotState.Moving || r.state === RobotState.Returning;
-    const anim = (moving ? Math.floor(t * 8) : Math.floor(t * 1.4)) % 2;
-    const asset = this.lib.get(`robot_${r.facing}_${anim}`);
-    if (v.body.texture !== asset.frames[0]) { v.body.texture = asset.frames[0]; v.shadow!.texture = asset.shadow!; }
+    if (v.upsetUntil === undefined) { // first frame: react to failed commands (not to Stop)
+      v.upsetUntil = 0;
+      r.queue.events.on('finished', (res) => { if (!res.ok && res.error !== 'stopped') v.upsetUntil = this.time + 1.6; });
+    }
+    this.time = t;
+    const pose: RobotPose = v.upsetUntil > t ? 'error' : moving ? 'walk' : r.state === RobotState.Harvesting || r.state === RobotState.Depositing ? 'work' : 'idle';
+    const fps = { idle: 3, walk: 9, work: 7, error: 6 }[pose];
+    const asset = this.lib.get(robotSprite(r.facing, pose, this.robotStage));
+    const tex = asset.frames[Math.floor(t * fps) % asset.frames.length];
+    if (v.body.texture !== tex) { v.body.texture = tex; v.shadow!.texture = asset.shadow!; }
     // ease elevation so steps up/down are a smooth climb rather than a jump
     const target = this.world.heightAt(Math.floor(r.posX), Math.floor(r.posY)) * HEIGHT_UNIT;
     v.lift += (target - v.lift) * (1 - Math.exp(-dt * 14));
     const p = uvToWorld(r.posX, r.posY);
-    let bob = 0;
-    if (moving) bob = Math.round(Math.abs(Math.sin(t * 16)));
-    else if (r.state === RobotState.Harvesting) bob = Math.round(Math.abs(Math.sin(t * 22)) * 2);
     const x = Math.round(p.x), y = Math.round(p.y - v.lift);
-    v.body.position.set(x, y - bob);
+    v.body.position.set(x, y); // the frames carry the bob
     v.shadow!.position.set(x, y);
     v.body.zIndex = depthOf(r.posX, r.posY) + 1;
+
+    // what the robot carries floats above its head, so cargo is visible in the world, not only in a panel
+    const [carried] = r.inventory.entries().sort((a, b) => b[1] - a[1])[0] ?? [];
+    if (carried && !v.cargo) { v.cargo = new Sprite(); v.cargo.anchor.set(0.5, 1); this.bodies.addChild(v.cargo); }
+    if (v.cargo) {
+      v.cargo.visible = !!carried;
+      if (carried) {
+        v.cargo.texture = this.lib.items.get(carried as ResourceId)!;
+        v.cargo.position.set(x, y - 66 - Math.round(Math.sin(t * 3) * 1.5) - (this.robotStage >= 2 ? 6 : 0));
+        v.cargo.zIndex = v.body.zIndex + 0.5;
+      }
+    }
 
     // activity effects: chips fly off a deposit while harvesting; cargo streams into storage on deposit
     v.fxTimer -= dt;

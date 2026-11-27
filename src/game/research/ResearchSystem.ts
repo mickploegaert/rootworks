@@ -7,7 +7,7 @@ import { RESEARCH, researchById, type Firmware, type ResearchNode } from './Rese
  * one kit at a time, until the node is complete. Labs work in parallel on the same node.
  */
 export class ResearchSystem {
-  readonly events = new Emitter<{ completed: ResearchNode }>();
+  readonly events = new Emitter<{ completed: ResearchNode; autoPicked: ResearchNode }>();
   readonly completed = new Set<string>();
   current: string | null = null;
   /** Kits consumed toward `current`. */
@@ -39,6 +39,11 @@ export class ResearchSystem {
 
   /** Called by the simulation each tick with all labs. */
   update(dt: number, labs: Machine[]): void {
+    // kits waiting in a Lab with no project picked: start the first open one rather than let them sit unexplained
+    if (!this.current && labs.some((l) => l.input.get('research_kit') > 0)) {
+      const first = RESEARCH.find((r) => this.available(r));
+      if (first) { this.select(first.id); this.events.emit('autoPicked', first); }
+    }
     const n = this.current ? researchById(this.current) : null;
     if (!n) return;
     for (const lab of labs) {

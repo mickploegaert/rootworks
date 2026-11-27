@@ -2,7 +2,7 @@ import { RobotCommands } from './api/RobotCommands.ts';
 import { Camera } from './camera/Camera.ts';
 import { TILE_H, TILE_W, tileToWorld } from './core/iso.ts';
 import { Emitter } from './core/Emitter.ts';
-import type { TileRect } from './entities/Entity.ts';
+import type { Entity, TileRect } from './entities/Entity.ts';
 import { ConstructionSite } from './entities/ConstructionSite.ts';
 import { Machine } from './entities/Machine.ts';
 import { ResourceNode } from './entities/ResourceNode.ts';
@@ -38,7 +38,7 @@ export interface SelectionInfo {
   biome: string;
   entity?: {
     name: string; description: string; kind: string;
-    resource?: { name: string; color: number; amount: number; max: number; harvestTime: number; yieldPerAction: number; depleted: boolean };
+    resource?: { id: ResourceId; name: string; use: string; color: number; amount: number; max: number; harvestTime: number; yieldPerAction: number; depleted: boolean };
     /** A building site: how far the drones are. */
     construction?: number;
     machine?: {
@@ -48,6 +48,10 @@ export interface SelectionInfo {
     };
     /** The starting workshop: where robots are assembled. */
     workshop?: { problem: string | null; cost: ResourceLine[]; robots: number };
+    /** Ready code that works with this thing, for the inspector's "Program this" box. */
+    program?: { code: string; note: string };
+    /** A Lab: what it is researching, in words. */
+    research?: string;
   };
   /** Land ownership of the selected tile's parcel. */
   parcel: { px: number; py: number; locked: boolean; problem: string | null; cost: ResourceLine[] };
@@ -119,6 +123,8 @@ export interface GameEvents {
   program: ProgramStatus;
   /** Completed tutorial step ids, whenever they change (for saving). */
   tutorial: string[];
+  /** A snippet the player chose to add to their program. */
+  insertCode: string;
 }
 
 const CONSOLE_MAX_PRINT = 2000;
@@ -127,6 +133,27 @@ const STEP = 1 / 60;
 const LOG_SIZE = 5;
 
 const line = (id: ResourceId, amount: number): ResourceLine => ({ id, name: RESOURCES[id].name, color: RESOURCES[id].color, amount });
+
+/** Short names go_to() understands, per resource (see PLACE_ALIASES in hostApi). */
+const PLACE_OF: Partial<Record<ResourceId, string>> = { wood: 'tree', stone: 'stone', scrap: 'scrap', iron_ore: 'iron', copper_ore: 'copper' };
+const MACHINE_CODE: Record<string, string> = {
+  workbench: 'go_to("workbench")\nput()                 # timber and scrap in\ntake("research_kit")  # waits for the kit',
+  sawmill: 'go_to("sawmill")\nput("wood")\ntake("planks")',
+  kiln: 'go_to("kiln")\nput("stone")\ntake("bricks")',
+  lab: 'go_to("lab")\nput("research_kit")',
+};
+
+/** Code that works with a selected thing: the bridge from "I see it" to "I can program it". */
+function programFor(e: Entity): { code: string; note: string } | undefined {
+  if (e instanceof ResourceNode) {
+    const place = PLACE_OF[e.resourceId];
+    if (e.depleted || !place) return undefined;
+    return { code: `go_to("${place}")\nharvest()\ndeposit()`, note: `go_to("${place}") picks the nearest one. For exactly this one: go_to(${e.tileX}, ${e.tileY}).` };
+  }
+  if (e instanceof Machine && MACHINE_CODE[e.machineId]) return { code: MACHINE_CODE[e.machineId], note: 'Machines work by themselves once a robot puts the ingredients in.' };
+  if (e.kind === 'storage') return { code: 'deposit()', note: 'deposit() walks here and unloads everything. take("wood") takes things back out.' };
+  return undefined;
+}
 
 /**
  * Composition root: wires simulation, camera, input and renderer together and runs the loop.
@@ -162,6 +189,8 @@ export class Game {
   guided = true;
   private program: ProgramStatus = { state: 'idle', language: null, line: null, errorLine: null };
   private consoleId = 0;
+  /** The last state change came from Step: its pause is not announced. */
+  private lastStep = false;
   private readonly tutorial: Tutorial;
 
   /** Source of the running program, kept for saving. */
@@ -181,6 +210,7 @@ export class Game {
     this.robot.queue.events.on('finished', (r) => this.report(r));
     this.tutorial = new Tutorial(tutorialDone);
     this.sim.research.events.on('completed', (n) => this.onResearch(n.id, n.name));
+    this.sim.research.events.on('autoPicked', (n) => this.out('system', `The Lab had Research Kits but no project, so it started on ${n.name}. You can change it in the Research panel.`));
     this.sim.entities.events.on('added', (e) => {
       if (e instanceof Machine && (e.machineId === 'workbench' || e.machineId === 'lab')) this.tutorialMark(e.machineId);
     });
@@ -211,6 +241,7 @@ export class Game {
     this.out('system', `Research complete: ${name}.`);
     this.note(`Researched ${name}`, true);
     if (id === 'cargo') for (const r of this.sim.robots) r.inventory.capacity = 16;
+    this.renderer.setRobotStage(this.sim.research.firmware);
     this.tutorialMark('research');
   }
 
@@ -253,6 +284,7 @@ export class Game {
     const c = tileToWorld(this.region.spawn.x, this.region.spawn.y);
     this.camera.snapTo({ x: c.x, y: c.y - 30 }, 2);
     await this.renderer.init(host, this.sim.entities, this.camera);
+    this.renderer.setRobotStage(this.sim.research.firmware);
     this.input = new InputController(this.renderer.app.canvas, this.camera, {
       onHover: (p) => {
         this.hoverTile = p && this.tileAt(p.x, p.y);
@@ -428,7 +460,7 @@ export class Game {
       entity = { name: e.name, description: e.description, kind: e.kind };
       if (e instanceof ResourceNode) {
         const d = e.def;
-        entity.resource = { name: d.name, color: d.color, amount: e.amount, max: e.maxAmount, harvestTime: d.harvestTime, yieldPerAction: d.yieldPerAction, depleted: e.depleted };
+        entity.resource = { id: d.id, name: d.name, use: d.use, color: d.color, amount: e.amount, max: e.maxAmount, harvestTime: d.harvestTime, yieldPerAction: d.yieldPerAction, depleted: e.depleted };
         if (e.depleted) entity.name = `Depleted ${d.name.toLowerCase()} deposit`;
       }
     }
@@ -441,6 +473,11 @@ export class Game {
         input: e.input.entries().map(([id, n]) => line(id, n)), output: e.output.entries().map(([id, n]) => line(id, n)),
         inputCap: e.def.inputCap, outputCap: e.def.outputCap,
       };
+    }
+    if (entity && e) entity.program = programFor(e);
+    if (e instanceof Machine && e.machineId === 'lab' && entity) {
+      const r = this.sim.research, cur = r.current ? researchById(r.current) : null;
+      entity.research = cur ? `Researching ${cur.name}: ${r.kitsDone} of ${cur.kits} kits used.` : 'No project picked yet. Open Research at the top to choose one (or the Lab picks the first when kits arrive).';
     }
     if ((e?.spriteId === 'lab' || e?.spriteId === 'bay') && entity) { // the workshop, or a region's field bay
       entity.workshop = { problem: this.sim.assembleProblem(), cost: Object.entries(Simulation.ROBOT_COST).map(([id, n]) => line(id as ResourceId, n!)), robots: this.sim.robots.length };
@@ -579,14 +616,38 @@ export class Game {
     const state = states.includes('running') ? 'running' : states.includes('paused') ? 'paused' : states.includes('error') ? 'error' : states.every((s) => s === 'stopped') ? 'stopped' : 'finished';
     if (state === this.program.state) return;
     if (state === 'finished') this.out('system', `Program completed (${this.runners.reduce((s, r) => s + (r?.stepCount ?? 0), 0).toLocaleString('en')} steps).`);
-    if (state === 'paused') this.out('system', 'Paused. Robots finish their current action, then wait.');
-    if (state === 'running' && this.program.state === 'paused') this.out('system', 'Resumed.');
+    const stepping = this.runners.some((r) => r?.isStepping) || (state === 'paused' && this.program.state === 'running' && this.lastStep);
+    if (state === 'paused' && !stepping) this.out('system', 'Paused. Robots finish their current action, then wait.');
+    if (state === 'running' && this.program.state === 'paused' && !stepping) this.out('system', 'Resumed.');
+    this.lastStep = this.runners.some((r) => r?.isStepping);
     if (state === 'error') return; // reportError already set the status
     this.setProgram({ ...this.program, state, language, line: state === 'finished' || state === 'stopped' ? null : this.program.line });
   }
 
   pauseProgram(): void { for (const r of this.runners) r?.pause(); }
   resumeProgram(): void { for (const r of this.runners) r?.resume(); }
+
+  /** Run one line of the program (starting it paused first if needed), then pause: the debugger for beginners. */
+  stepProgram(language: LanguageId, source: string): void {
+    if (!this.programActive) {
+      this.runProgram(language, source);
+      if (!this.programActive) return; // did not compile
+      this.lastStep = true; // the start-paused is part of stepping: no "Paused" message
+      for (const r of this.runners) r?.pause();
+    }
+    for (const r of this.runners) r?.step();
+  }
+
+  /** The robot functions as the command palette lists them, in definition order. */
+  commandReference(): { name: string; params: readonly string[]; doc: string; tier: number; example: string }[] {
+    const fns = createHostFunctions(this.commands, { action() {}, result() {} });
+    const first = ['go_to', 'harvest', 'deposit', 'put', 'take']; // what beginners need, before the finer controls
+    const rank = (n: string) => (first.includes(n) ? first.indexOf(n) : first.length);
+    return [...fns.values()].sort((a, b) => rank(a.name) - rank(b.name)).map((f) => ({ name: f.name, params: f.params, doc: f.doc, tier: f.tier ?? 0, example: f.example ?? `${f.name}()` }));
+  }
+
+  /** Ask the program editor to insert a snippet (from the inspector's "Program this" hints). */
+  insertCode(code: string): void { this.events.emit('insertCode', code); }
 
   /** Stop the program and cancel whatever the robots were doing for it. */
   stopProgram(quiet = false): void {

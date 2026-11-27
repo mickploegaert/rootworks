@@ -36,6 +36,8 @@ export class ProgramRunner {
   private idle = 0;
   private _state: RunState = 'running';
   private _line: number | null = null;
+  /** Step mode: run one statement (and the robot action it starts), then pause again. */
+  private stepping = false;
 
   constructor(program: CompiledProgram, host: HostApi, private readonly limits: RunLimits = DEFAULT_LIMITS, saved?: RunnerSave) {
     this.instance = saved ? program.restore(host, saved.program) : program.start(host);
@@ -48,7 +50,10 @@ export class ProgramRunner {
   get isActive(): boolean { return this._state === 'running' || this._state === 'paused'; }
 
   pause(): void { if (this._state === 'running') this.setState('paused'); }
-  resume(): void { if (this._state === 'paused') this.setState('running'); }
+  resume(): void { if (this._state === 'paused') { this.stepping = false; this.setState('running'); } }
+  /** From a pause: do one line, wait for its robot action to finish, then pause again. */
+  step(): void { if (this._state === 'paused') { this.stepping = true; this.setState('running'); } }
+  get isStepping(): boolean { return this.stepping; }
 
   /** End the program now. The caller is responsible for cancelling the robot's queued actions. */
   stop(): void {
@@ -72,14 +77,16 @@ export class ProgramRunner {
       this.instance.resume(this.waiting.map(r));
       this.waiting = null;
       this.idle = 0;
+      if (this.stepping) return this.finishStep();
     }
     try {
-      const r = this.instance.run(this.limits.stepsPerTick);
+      const r = this.instance.run(this.stepping ? 1 : this.limits.stepsPerTick);
       this.steps += this.instance.executed;
       this.idle += this.instance.executed;
       this.setLine(this.instance.line);
       if (r.kind === 'done') { this.setState('finished'); return; }
       if (r.kind === 'wait') this.waiting = r.pending;
+      else if (this.stepping) { this.stepping = false; this.setState('paused'); return; } // a line without a robot action: show the next one
       if (this.idle > this.limits.idleStepLimit) {
         throw new ScriptError('limit', `Your program ran ${this.limits.idleStepLimit.toLocaleString('en')} steps without the robot doing anything. It is probably stuck in a loop that never ends (for example "while True:" with nothing that moves or harvests). The program was stopped.`, this._line ?? undefined);
       }
@@ -91,6 +98,23 @@ export class ProgramRunner {
       this.events.emit('error', err);
       this.setState('error');
     }
+  }
+
+  /** The stepped line's action is done: finish that statement (budget 0 stops at the next line), then pause there. */
+  private finishStep(): void {
+    try {
+      const r = this.instance.run(0);
+      this.setLine(this.instance.line);
+      if (r.kind === 'done') { this.stepping = false; this.setState('finished'); return; }
+      if (r.kind === 'wait') { this.waiting = r.pending; return; } // the same line started another action
+    } catch (e) {
+      this.stepping = false;
+      this.events.emit('error', e instanceof ScriptError ? e : new ScriptError('runtime', String(e), this._line ?? undefined));
+      this.setState('error');
+      return;
+    }
+    this.stepping = false;
+    this.setState('paused');
   }
 
   private setLine(line: number | null): void {

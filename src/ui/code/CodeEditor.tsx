@@ -40,7 +40,7 @@ const marks = StateField.define<DecorationSet>({
 
 const theme = EditorView.theme({
   '&': { height: '100%', backgroundColor: '#23180f', color: '#f4e8d2', fontSize: 'var(--code-font, 14px)' },
-  '.cm-scroller': { fontFamily: "Consolas, 'Cascadia Mono', 'Courier New', monospace", lineHeight: '1.55' },
+  '.cm-scroller': { scrollbarColor: '#6e4c33 #1c130c', fontFamily: "Consolas, 'Cascadia Mono', 'Courier New', monospace", lineHeight: '1.55' },
   '.cm-content': { caretColor: '#ffcf6e', padding: '6px 0' },
   '.cm-cursor': { borderLeftColor: '#ffcf6e', borderLeftWidth: '2px' },
   '.cm-gutters': { backgroundColor: '#1c130c', color: '#7a6048', border: 'none', borderRight: '1px solid #4a3324' },
@@ -76,10 +76,17 @@ export interface CodeEditorProps {
   readOnly: boolean;
   activeLine: number | null;
   errorLine: number | null;
+  /** Filled with the editor's insert function, for the tutorial, command palette and inspector hints. */
+  apiRef?: { current: EditorApi | null };
+}
+
+export interface EditorApi {
+  /** Insert code below the cursor's line (or at the end if the player never placed the cursor), matching its indentation. */
+  insert(code: string): void;
 }
 
 /** CodeMirror 6 wrapped for React. The editor owns its document; React only pushes language, markers and read-only state. */
-export function CodeEditor({ language, value, onChange, onRun, readOnly, activeLine, errorLine }: CodeEditorProps) {
+export function CodeEditor({ language, value, onChange, onRun, readOnly, activeLine, errorLine, apiRef }: CodeEditorProps) {
   const host = useRef<HTMLDivElement>(null);
   const view = useRef<EditorView | null>(null);
   const cbs = useRef({ onChange, onRun });
@@ -93,7 +100,7 @@ export function CodeEditor({ language, value, onChange, onRun, readOnly, activeL
       state: EditorState.create({
         doc: value,
         extensions: [
-          basicSetup, theme, syntaxHighlighting(highlight), marks, indentUnit.of('    '),
+          basicSetup, theme, syntaxHighlighting(highlight), marks, indentUnit.of('    '), EditorView.lineWrapping,
           keymap.of([{ key: 'Mod-Enter', run: () => { cbs.current.onRun(); return true; } }, indentWithTab]),
           lang.of(LANG[language]()), ro.of(EditorState.readOnly.of(readOnly)),
           EditorView.updateListener.of((u) => { if (u.docChanged) cbs.current.onChange(u.state.doc.toString()); }),
@@ -102,7 +109,8 @@ export function CodeEditor({ language, value, onChange, onRun, readOnly, activeL
       }),
     });
     view.current = v;
-    return () => { v.destroy(); view.current = null; };
+    if (apiRef) apiRef.current = { insert: (code) => insertBelow(v, code) };
+    return () => { v.destroy(); view.current = null; if (apiRef) apiRef.current = null; };
     // created once; later prop changes are applied by the effects below
   }, []);
 
@@ -134,4 +142,18 @@ export function CodeEditor({ language, value, onChange, onRun, readOnly, activeL
   }, [activeLine, errorLine]);
 
   return <div ref={host} className="code-editor" />;
+}
+
+function insertBelow(v: EditorView, code: string): void {
+  const { state } = v, head = state.selection.main.head;
+  let line = head === 0 ? state.doc.line(state.doc.lines) : state.doc.lineAt(head);
+  // skip back over trailing blank lines at the end so snippets join the program
+  while (head === 0 && line.number > 1 && !line.text.trim()) line = state.doc.line(line.number - 1);
+  let indent = /^\s*/.exec(line.text)![0];
+  if (line.text.trimEnd().endsWith(':')) indent += '    ';
+  const body = code.split('\n').map((l) => (l ? indent + l : l)).join('\n');
+  const blank = !line.text.trim();
+  const from = blank ? line.from : line.to, insert = blank ? body : '\n' + body;
+  v.dispatch({ changes: { from, to: line.to, insert }, selection: { anchor: from + insert.length }, scrollIntoView: true });
+  v.focus();
 }

@@ -55,7 +55,11 @@ export class ApproachAction extends WalkAction {
     super();
     this.name = `${label}(${rect.x}, ${rect.y})`;
   }
-  protected plan(ctx: ActionContext) { return ctx.pathfinder.findPathToAdjacent({ x: ctx.robot.tileX, y: ctx.robot.tileY }, this.rect); }
+  protected plan(ctx: ActionContext) {
+    const target = ctx.entities.at(this.rect.x, this.rect.y);
+    if (target) ctx.robot.destination = target;
+    return ctx.pathfinder.findPathToAdjacent({ x: ctx.robot.tileX, y: ctx.robot.tileY }, this.rect);
+  }
   protected unreachable() { return 'no reachable tile next to the target'; }
 }
 
@@ -89,6 +93,9 @@ export function findHarvestTarget(ctx: ActionContext, at?: Tile): ResourceNode |
     const e = ctx.entities.at(at.x, at.y);
     return e instanceof ResourceNode ? e : null;
   }
+  // the deposit the last go_to() headed for wins, so go_to("tree") + harvest() never picks the scrap pile beside it
+  const d = r.destination;
+  if (d instanceof ResourceNode && !d.depleted && isAdjacent(here, d.rect)) return d;
   const ahead = [[1, 0], [0, 1], [-1, 0], [0, -1]][r.facing];
   const order = [ahead, [1, 0], [0, 1], [-1, 0], [0, -1]];
   for (const [dx, dy] of order) {

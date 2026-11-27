@@ -28,6 +28,9 @@ export interface HostFunction {
   readonly name: string;
   readonly params: readonly string[];
   readonly doc: string;
+  /** Firmware tier needed (0: from the start) and a ready-to-insert call, for the command palette. */
+  readonly tier?: number;
+  readonly example?: string;
   /** Throws ScriptError('runtime') on bad arguments. */
   call(args: HostValue[]): HostValue | Pending;
 }

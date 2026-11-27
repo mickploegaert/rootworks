@@ -220,7 +220,7 @@ function play(f: ReturnType<typeof field>, src: string, maxTicks = 60 * 600, lim
   assert.ok(ticks > 60 * 4, `program must take real time, took ${ticks} ticks`);
   assert.equal(f.robot.inventory.total, 0);
   assert.equal(f.storage.inventory.get('scrap'), 3, 'second harvest() failed (nothing adjacent after moving east), first stored');
-  assert.ok(f.log.includes('- harvest() failed: no resource deposit there'), f.log.join('\n'));
+  assert.ok(f.log.some((l) => l.startsWith('- harvest() failed: no resource deposit there. Tip: Seedling must stand next to')), f.log.join('\n'));
   assert.ok(f.log.some((l) => l.startsWith('+ stored 3 Scrap Metal')));
 }
 { // the program waits for each action before running the next line
@@ -346,8 +346,9 @@ print("at", get_position())`;
   assert.equal(t.observe({ ok: true, action: 'move(north)' }), true);
   assert.equal(t.observe({ ok: false, action: 'harvest()' }), false);
   assert.equal(t.observe({ ok: true, action: 'harvest()' }), true);
-  assert.equal(t.observe({ ok: true, action: 'returnToStorage()' }), true);
-  assert.equal(new Tutorial(['move', 'harvest']).observe({ ok: true, action: 'go_to(storage)' }), true, 'the newer go_to("storage") counts too');
+  assert.equal(new Tutorial().observe({ ok: true, action: 'go_to(scrap)' }), true, 'go_to() is the first lesson');
+  assert.equal(new Tutorial().observe({ ok: true, action: 'approach(3, 4)' }), true, 'go_to(x, y) counts too');
+  assert.deepEqual(new Tutorial(['move', 'harvest', 'storage', 'deposit']).completed, ['move', 'harvest', 'deposit'], 'old saves with the removed storage step keep their progress');
   assert.equal(t.mark('lab'), false, 'built early: remembered, but not its turn yet');
   assert.equal(t.observe({ ok: true, action: 'deposit()' }), true);
   assert.equal(t.mark('workbench'), true);
@@ -358,4 +359,24 @@ print("at", get_position())`;
   assert.deepEqual(new Tutorial(['move', 'deposit']).completed, ['move'], 'restored progress must be a prefix');
 }
 
+
+// ---------------------------------------------------------------- step mode: one line at a time, waiting for the robot's action
+{
+  let pending: { result: { ok: boolean; action: string } | null } | null = null;
+  const fns = new Map([['act', { name: 'act', params: [], doc: '', call: () => ({ pending: (pending = { result: null }) as never, map: () => true }) }]]);
+  const runner = new ProgramRunner(LANGUAGES.python.compile('a = 1\nact()\nb = 2\nprint(a + b)'), { functions: fns as never, print() {} });
+  runner.pause();
+  runner.step(); runner.tick();
+  assert.equal(runner.state, 'paused', 'a line without an action pauses right after');
+  assert.equal(runner.line, 2, 'and shows the next line');
+  runner.step(); runner.tick(); runner.tick();
+  assert.equal(runner.state, 'running', 'still waiting for the robot');
+  pending!.result = { ok: true, action: 'act' };
+  runner.tick();
+  assert.equal(runner.state, 'paused', 'pauses once the action is done');
+  assert.equal(runner.line, 3, 'on the next line, not the finished one');
+  runner.resume();
+  for (let i = 0; i < 5; i++) runner.tick();
+  assert.equal(runner.state, 'finished');
+}
 console.log('scripting ok');
