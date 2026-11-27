@@ -28,8 +28,8 @@ export interface HostFunction {
   readonly name: string;
   readonly params: readonly string[];
   readonly doc: string;
-  /** Firmware tier needed (0: from the start) and a ready-to-insert call, for the command palette. */
-  readonly tier?: number;
+  /** Skill needed (none: from the start) and a ready-to-insert call, for the command palette. */
+  readonly skill?: string;
   readonly example?: string;
   /** Throws ScriptError('runtime') on bad arguments. */
   call(args: HostValue[]): HostValue | Pending;
@@ -56,6 +56,8 @@ export interface ProgramInstance {
   resume(value: HostValue): void;
   /** Line being executed (or waited on). */
   readonly line: number | null;
+  /** The program's own variables and their values as text, for the debugger. */
+  variables?(): [string, string][];
   /** Statements executed by the last `run`. */
   readonly executed: number;
   /** JSON-serialisable snapshot of the whole running program. */
@@ -68,8 +70,8 @@ export interface CompiledProgram {
   restore(host: HostApi, state: unknown): ProgramInstance;
 }
 
-/** Guided mode limits syntax to what the robots' firmware has taught; Engineer mode allows everything. */
-export interface CompileOptions { guided: boolean; firmware: number }
+/** Guided mode limits syntax to the skills the robots have learned; Engineer mode allows everything. */
+export interface CompileOptions { guided: boolean; skills: ReadonlySet<string> }
 
 /** One programming language. Every adapter targets the same HostApi, so all languages control robots identically. */
 export interface LanguageAdapter {

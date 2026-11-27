@@ -47,6 +47,7 @@ export class ProgramRunner {
   get state(): RunState { return this._state; }
   get line(): number | null { return this._line; }
   get stepCount(): number { return this.steps; }
+  get variables(): [string, string][] { return this.instance.variables?.() ?? []; }
   get isActive(): boolean { return this._state === 'running' || this._state === 'paused'; }
 
   pause(): void { if (this._state === 'running') this.setState('paused'); }

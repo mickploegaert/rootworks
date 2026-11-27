@@ -37,6 +37,12 @@ const STEPS: readonly Omit<TutorialStep, 'done'>[] = [
     code: 'deposit()',
   },
   {
+    id: 'automate', label: 'Make Seedling work by itself',
+    why: 'Each lesson earned you a Spark. Three Sparks buy Loops: code that repeats forever. That is automation.',
+    how: 'Open Skills (top), buy Loops, then put your commands inside while True: and Run. Press Stop to end it.',
+    code: 'while True:\n    go_to("scrap")\n    harvest()\n    deposit()',
+  },
+  {
     id: 'workbench', label: 'Build a Workbench',
     why: 'Machines turn resources into better things. The Workbench crafts Research Kits.',
     how: 'Collect 6 Scrap Metal, then open Build (bottom left), pick the Workbench and click a free spot.',
@@ -44,25 +50,27 @@ const STEPS: readonly Omit<TutorialStep, 'done'>[] = [
   },
   {
     id: 'kit', label: 'Craft a Research Kit',
-    why: 'Research Kits are the fuel of research: every new robot ability costs a few of them.',
+    why: 'A Research Kit is worth 2 Sparks at the Lab: the steady way to earn skills once the lessons run out.',
     how: 'Bring 2 Timber and 1 Scrap Metal to the Workbench, put() them in, and take() the kit out.',
     code: 'go_to("tree")\nharvest()\ngo_to("scrap")\nharvest()\ngo_to("workbench")\nput()\ntake("research_kit")',
   },
   {
     id: 'lab', label: 'Build a Research Lab',
-    why: 'The Lab is where Research Kits turn into discoveries.',
+    why: 'The Lab turns Research Kits into Sparks, the currency of the Skills tab.',
     how: 'Build menu, Science tab. It costs Timber and Scrap Metal from storage.',
     code: null,
   },
   {
-    id: 'research', label: 'Finish your first research',
-    why: 'Research teaches Seedling new tricks: variables, decisions, loops, and new machines.',
-    how: 'Open Research (top) and pick Counter firmware. Then carry kits to the Lab: go_to("lab") and put("research_kit").',
+    id: 'research', label: 'Turn a Research Kit into Sparks',
+    why: 'The Lab turns every Research Kit into 2 Sparks. Sparks buy new skills: Variables, Sense, machines, more robots.',
+    how: 'Carry kits to the Lab: go_to("lab") and put("research_kit"). Then spend the Sparks in the Skills tab.',
     code: 'go_to("lab")\nput("research_kit")',
   },
 ];
 
 export const TUTORIAL_STEPS = STEPS.length;
+/** Lessons inserted after release: saves made before them must not lose their later progress. */
+const ADDED_LATER = new Set(['automate']);
 
 /** Which step a successful robot action completes. Only actions started by a program count. */
 function stepFor(r: ActionResult): string | null {
@@ -79,7 +87,12 @@ export class Tutorial {
   private readonly done = new Set<string>();
 
   constructor(completed: readonly string[] = []) {
-    for (const s of STEPS) { if (!completed.includes(s.id)) break; this.done.add(s.id); }
+    const later = (i: number) => STEPS.slice(i + 1).some((s) => completed.includes(s.id));
+    STEPS.forEach((s, i) => {
+      if (this.done.size < i) return; // progress is a prefix
+      // a lesson added in an update counts as done when the save is already past it
+      if (completed.includes(s.id) || (ADDED_LATER.has(s.id) && later(i))) this.done.add(s.id);
+    });
   }
 
   get steps(): TutorialStep[] { return STEPS.map((s) => ({ ...s, done: this.done.has(s.id) })); }

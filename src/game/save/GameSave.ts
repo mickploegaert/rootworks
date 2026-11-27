@@ -1,3 +1,4 @@
+import { SPARKS_PER_KIT } from '../research/ResearchSystem.ts';
 import { BUILDINGS, buildingById } from '../building/BuildingDefs.ts';
 import type { Entity } from '../entities/Entity.ts';
 import { ConstructionSite } from '../entities/ConstructionSite.ts';
@@ -34,7 +35,8 @@ export interface RegionSave {
   robots: { name?: string; x: number; y: number; facing: number; cargo: Amounts }[];
   storage: Amounts;
   /** The program the region's robots were running: one runner snapshot per robot (null where it had finished). */
-  program: { language: LanguageId; source: string; runners: (RunnerSave | null)[] } | null;
+  /** sources: each robot's own program (index = robot), absent in saves from before per-robot programs. */
+  program: { language: LanguageId; source: string; runners: (RunnerSave | null)[]; sources?: (string | null)[] } | null;
 }
 
 /** Progress that belongs to the player, not to a place: it travels with them between regions. */
@@ -42,8 +44,12 @@ export interface Progress {
   research: string[];
   /** Research in progress. */
   researching: { id: string; kits: number } | null;
+  /** Unspent Sparks (absent in saves from before the skill tree). */
+  sparks?: number;
   /** Completed commissions. */
   commissions: string[];
+  /** Challenge stars and best scores, and today's order (absent in older saves). */
+  challenges?: { stars: [string, number][]; best: [string, number][]; daily: { day: string; got: number; done: boolean } };
 }
 
 /** A save game: the world seed, which region is active, a diff per visited region, and the player's progress. */
@@ -96,16 +102,27 @@ export function captureRegion(sim: Simulation, generated: ReadonlyMap<string, nu
 export function captureProgress(sim: Simulation): Progress {
   return {
     research: [...sim.research.completed],
-    researching: sim.research.current ? { id: sim.research.current, kits: sim.research.kitsDone } : null,
+    researching: null,
+    sparks: sim.research.sparks,
     commissions: [...sim.commissions.done],
+    challenges: { stars: [...sim.challenges.stars], best: [...sim.challenges.best], daily: { ...sim.challenges.daily } },
   };
 }
 
 /** Restore the player's progress (apply before the region, so research bonuses reach its robots). */
 export function applyProgress(sim: Simulation, p: Progress): void {
   for (const r of p.research) sim.research.completed.add(r);
-  if (p.researching && !sim.research.select(p.researching.id)) sim.research.kitsDone = p.researching.kits;
+  // older saves: Counter also taught arithmetic and comparisons, Loop also def; kits fed to a project come back as Sparks
+  if (sim.research.isDone('counter')) sim.research.completed.add('operators');
+  if (sim.research.isDone('loop')) sim.research.completed.add('functions');
+  if (sim.research.isDone('counter')) sim.research.completed.add('lists'); // lists were part of the old firmware too
+  sim.research.sparks = (p.sparks ?? 0) + (p.researching ? p.researching.kits * SPARKS_PER_KIT : 0);
   for (const c of p.commissions) sim.commissions.done.add(c);
+  if (p.challenges) {
+    for (const [id, n] of p.challenges.stars) sim.challenges.stars.set(id, n);
+    sim.challenges.best = new Map(p.challenges.best);
+    sim.challenges.daily = { ...p.challenges.daily };
+  }
 }
 
 /** Apply a validated region diff to the region's freshly generated simulation. */
@@ -136,7 +153,7 @@ export function applyRegion(sim: Simulation, s: Omit<RegionSave, 'program'>): vo
   sim.robots.forEach((r: Robot, i) => {
     const saved = s.robots[i];
     if (!saved || !world.inBounds(saved.x, saved.y)) return;
-    if (sim.research.isDone('cargo')) r.inventory.capacity = 16;
+    sim.applySkills(r);
     r.tileX = saved.x; r.tileY = saved.y; r.posX = saved.x + 0.5; r.posY = saved.y + 0.5;
     r.facing = (saved.facing & 3) as Robot['facing'];
     for (const [id, n] of Object.entries(saved.cargo)) r.inventory.add(id as ResourceId, n!);
@@ -168,12 +185,18 @@ function regionSaveOk(s: RegionSave, worldSize: number): boolean {
     const p = s.program;
     if (!p || typeof p.source !== 'string' || p.source.length > 200_000 || !['python', 'java', 'typescript'].includes(p.language)
       || !Array.isArray(p.runners) || p.runners.length > 200 || !p.runners.every((r) => r === null || typeof r === 'object')) return false;
+    if (p.sources !== undefined && (!Array.isArray(p.sources) || p.sources.length > 200 || !p.sources.every((x) => x === null || (typeof x === 'string' && x.length <= 200_000)))) return false;
   }
   return true;
 }
 
 function progressOk(s: Partial<Progress> & { tutorial?: unknown }): boolean {
   if (s.researching !== null && (typeof s.researching !== 'object' || typeof s.researching.id !== 'string' || !isInt(s.researching.kits, 0, 1000))) return false;
+  if (s.sparks !== undefined && !isInt(s.sparks, 0, 1_000_000)) return false;
+  if (s.challenges !== undefined) {
+    const c = s.challenges, pairs = (a: unknown) => Array.isArray(a) && a.length < 100 && a.every((x) => Array.isArray(x) && typeof x[0] === 'string' && typeof x[1] === 'number' && Number.isFinite(x[1]));
+    if (!c || !pairs(c.stars) || !pairs(c.best) || !c.daily || typeof c.daily.day !== 'string' || !isInt(c.daily.got, 0, 1_000_000) || typeof c.daily.done !== 'boolean') return false;
+  }
   if (s.tutorial !== undefined && !stringsOk(s.tutorial, 50, 40)) return false;
   if (s.commissions !== undefined && !stringsOk(s.commissions, 500)) return false;
   return stringsOk(s.research, 500);

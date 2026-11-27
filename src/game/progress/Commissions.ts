@@ -10,6 +10,10 @@ export interface Commission {
   measure(sim: Simulation): number;
   target: number;
   reward: ResourceAmounts;
+  /** Sparks paid on completion: the main way to earn skills besides the Lab. */
+  sparks: number;
+  /** Who in the valley asked for it. */
+  from: string;
 }
 
 const stored = (id: ResourceId) => (sim: Simulation) => sim.storages[0]?.inventory.get(id) ?? 0;
@@ -18,16 +22,16 @@ const hasMachine = (machineId: string) => (sim: Simulation) => (sim.machines.som
 
 /** Goals that give direction without forcing it: three are offered at a time, in this order. */
 export const COMMISSIONS: readonly Commission[] = [
-  { id: 'scrap10', title: 'Gather 10 scrap into storage', measure: stored('scrap'), target: 10, reward: { research_kit: 1 } },
-  { id: 'bench', title: 'Build a Workbench', measure: hasMachine('workbench'), target: 1, reward: { scrap: 6 } },
-  { id: 'wood20', title: 'Stock 20 timber', measure: stored('wood'), target: 20, reward: { research_kit: 1 } },
-  { id: 'lab', title: 'Build a Research Lab', measure: hasMachine('lab'), target: 1, reward: { research_kit: 2 } },
-  { id: 'kits5', title: 'Craft 5 research kits', measure: batches('workbench'), target: 5, reward: { scrap: 10 } },
-  { id: 'planks30', title: 'Stock 30 planks', measure: stored('planks'), target: 30, reward: { research_kit: 2 } },
-  { id: 'robots2', title: 'Run a fleet of 2 robots', measure: (sim) => sim.robots.length, target: 2, reward: { research_kit: 3 } },
-  { id: 'parcel', title: 'Reclaim a new parcel', measure: (sim) => sim.world.unlockedParcels().length - sim.baseParcels, target: 1, reward: { research_kit: 3 } },
-  { id: 'bricks20', title: 'Stock 20 bricks', measure: stored('bricks'), target: 20, reward: { research_kit: 2 } },
-  { id: 'research6', title: 'Complete 6 research projects', measure: (sim) => sim.research.completed.size, target: 6, reward: { planks: 20 } },
+  { id: 'scrap10', title: 'Gather 10 scrap into storage', measure: stored('scrap'), target: 10, reward: { research_kit: 1 }, sparks: 2, from: 'Smith Bram' },
+  { id: 'bench', title: 'Build a Workbench', measure: hasMachine('workbench'), target: 1, reward: { scrap: 6 }, sparks: 2, from: 'Smith Bram' },
+  { id: 'wood20', title: 'Stock 20 timber', measure: stored('wood'), target: 20, reward: { research_kit: 1 }, sparks: 2, from: 'Miller Tobin' },
+  { id: 'lab', title: 'Build a Research Lab', measure: hasMachine('lab'), target: 1, reward: { research_kit: 2 }, sparks: 3, from: 'Old Wren' },
+  { id: 'kits5', title: 'Craft 5 research kits', measure: batches('workbench'), target: 5, reward: { scrap: 10 }, sparks: 3, from: 'Old Wren' },
+  { id: 'planks30', title: 'Stock 30 planks', measure: stored('planks'), target: 30, reward: { research_kit: 2 }, sparks: 4, from: 'Miller Tobin' },
+  { id: 'robots2', title: 'Run a fleet of 2 robots', measure: (sim) => sim.robots.length, target: 2, reward: { research_kit: 3 }, sparks: 4, from: 'Mayor Hazel' },
+  { id: 'parcel', title: 'Reclaim a new parcel', measure: (sim) => sim.world.unlockedParcels().length - sim.baseParcels, target: 1, reward: { research_kit: 3 }, sparks: 4, from: 'Mayor Hazel' },
+  { id: 'bricks20', title: 'Stock 20 bricks', measure: stored('bricks'), target: 20, reward: { research_kit: 2 }, sparks: 4, from: 'Smith Bram' },
+  { id: 'research6', title: 'Learn 6 skills', measure: (sim) => sim.research.completed.size, target: 6, reward: { planks: 20 }, sparks: 5, from: 'Old Wren' },
 ];
 
 /** Tracks which commissions are done; rewards go straight into storage. */
@@ -44,6 +48,7 @@ export class CommissionBoard {
     for (const c of finished) {
       this.done.add(c.id);
       if (store) for (const [id, n] of Object.entries(c.reward)) store.add(id as ResourceId, n!);
+      sim.research.sparks += c.sparks;
     }
     return finished;
   }

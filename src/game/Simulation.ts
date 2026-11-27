@@ -1,6 +1,6 @@
 import type { Entity } from './entities/Entity.ts';
 import { EntityManager } from './entities/EntityManager.ts';
-import { Robot } from './entities/Robot.ts';
+import { ROBOT_CAPACITY, Robot } from './entities/Robot.ts';
 import { StorageDepot } from './entities/StorageDepot.ts';
 import type { ActionContext } from './robot/RobotAction.ts';
 import { Pathfinder } from './world/Pathfinder.ts';
@@ -10,6 +10,7 @@ import { ConstructionSite } from './entities/ConstructionSite.ts';
 import type { Machine } from './entities/Machine.ts';
 import { ResearchSystem } from './research/ResearchSystem.ts';
 import { CommissionBoard } from './progress/Commissions.ts';
+import { ChallengeBoard } from './progress/Challenges.ts';
 import { Robot as RobotClass } from './entities/Robot.ts';
 import { PARCEL } from './world/World.ts';
 import type { ResourceAmounts } from './inventory/Inventory.ts';
@@ -27,6 +28,7 @@ export class Simulation {
   readonly building: BuildingSystem;
   readonly research = new ResearchSystem();
   readonly commissions = new CommissionBoard();
+  readonly challenges = new ChallengeBoard();
 
   constructor(readonly world: World, readonly entities: EntityManager) {
     this.pathfinder = new Pathfinder(world, entities);
@@ -40,12 +42,13 @@ export class Simulation {
   /** Cost to reclaim the next parcel: grows with how much land is already open. */
   reclaimCost(): ResourceAmounts {
     const extra = Math.max(0, this.world.unlockedParcels().length - this.baseParcels);
-    return { wood: 10 + extra * 6, stone: 6 + extra * 4 };
+    const k = this.research.isDone('surveying2') ? 0.7 : 1; // Surveying II
+    return { wood: Math.ceil((10 + extra * 6) * k), stone: Math.ceil((6 + extra * 4) * k) };
   }
 
   /** Why a parcel can't be reclaimed, or null. */
   reclaimProblem(px: number, py: number): string | null {
-    if (!this.research.isDone('surveying')) return 'Research Surveying first';
+    if (!this.research.isDone('surveying')) return 'Learn the Surveying skill first';
     if (this.world.isParcelUnlocked(px, py)) return 'Already yours';
     let land = false;
     for (let y = py * PARCEL; y < (py + 1) * PARCEL && !land; y++) for (let x = px * PARCEL; x < (px + 1) * PARCEL; x++) if (this.world.get(x, y) !== null) { land = true; break; }
@@ -67,7 +70,7 @@ export class Simulation {
   static readonly MAX_ROBOTS = 8;
 
   assembleProblem(): string | null {
-    if (!this.research.isDone('assembly')) return 'Research Robot assembly first';
+    if (!this.research.isDone('assembly')) return 'Learn the Robot assembly skill first';
     if (this.robots.length >= Simulation.MAX_ROBOTS) return `The workshop can run at most ${Simulation.MAX_ROBOTS} robots for now`;
     return this.shortfall(Simulation.ROBOT_COST);
   }
@@ -81,7 +84,7 @@ export class Simulation {
       if (!this.pathfinder.isPassable(x, y) || this.robots.some((b) => b.tileX === x && b.tileY === y)) continue;
       this.pay(Simulation.ROBOT_COST);
       const robot = new RobotClass(x, y, `RW-0${this.robots.length + 1}`);
-      if (this.research.isDone('cargo')) robot.inventory.capacity = 16;
+      this.applySkills(robot);
       this.entities.add(robot);
       return null;
     }
@@ -131,6 +134,7 @@ export class Simulation {
     sim.generated = gen;
     if (progress) applyProgress(sim, progress);
     if (saved) applyRegion(sim, saved);
+    for (const r of sim.robots) sim.applySkills(r); // a region entered for the first time gets skill-built robots too
     return sim;
   }
 
@@ -138,6 +142,11 @@ export class Simulation {
   capture() { return captureRegion(this, this.generated); }
 
   private commissionTimer = 0;
+  /** Machines within reach of a windmill work faster; refreshed every couple of seconds. */
+  private boosted = new Set<Machine>();
+  private boostTimer = 0;
+  static readonly WIND_RANGE = 6;
+  static readonly WIND_BOOST = 1.5;
   /** Commissions completed since the game last looked (it shows them, then clears the list). */
   readonly completedCommissions: import('./progress/Commissions.ts').Commission[] = [];
 
@@ -163,14 +172,45 @@ export class Simulation {
     return ctx;
   }
 
+  /** A robot's stats from the skills learned: cargo, speed, harvest yield. Safe to call again at any time. */
+  applySkills(robot: Robot): void {
+    const r = this.research;
+    robot.inventory.capacity = r.isDone('cargo2') ? 22 : r.isDone('cargo') ? 16 : ROBOT_CAPACITY;
+    robot.speed = 2.2 * (1 + 0.2 * ['speed1', 'speed2', 'speed3'].filter((s) => r.isDone(s)).length);
+    robot.yieldBonus = r.isDone('yield1') ? 1 : 0;
+  }
+
+  /** Feeder skill: machines near storage pull their recipe's ingredients from it, every half second. */
+  feed(): void {
+    const store = this.storages[0];
+    if (!store || !this.research.isDone('feeder')) return;
+    for (const m of this.machines) {
+      const rc = m.recipe;
+      if (!rc || Math.abs(m.tileX - store.tileX) > 3 || Math.abs(m.tileY - store.tileY) > 3) continue;
+      for (const [id, n] of Object.entries(rc.inputs) as [ResourceId, number][]) {
+        const want = Math.min(n * 2 - m.input.get(id), store.inventory.get(id), m.input.free);
+        if (want > 0) m.input.add(id, store.inventory.remove(id, want));
+      }
+    }
+  }
+
+  /** Machines with a windmill within WIND_RANGE tiles. */
+  windBoosted(): Set<Machine> {
+    const mills = this.entities.ofKind('prop').filter((p) => p.spriteId === 'turbine');
+    const near = (m: Machine) => mills.some((w) => Math.abs(w.tileX - m.tileX) <= Simulation.WIND_RANGE && Math.abs(w.tileY - m.tileY) <= Simulation.WIND_RANGE);
+    return new Set(mills.length ? this.machines.filter(near) : []);
+  }
+
   /** One fixed simulation step. */
   update(dt: number): void {
     this.entities.update(dt);
     for (const r of this.robots) r.queue.update(this.contextFor(r), dt);
-    for (const m of this.machines) if (m.machineId !== 'lab') m.update(dt);
+    this.boostTimer -= dt;
+    if (this.boostTimer <= 0) { this.boostTimer = 2; this.boosted = this.windBoosted(); }
+    for (const m of this.machines) if (m.machineId !== 'lab') m.update(this.boosted.has(m) ? dt * Simulation.WIND_BOOST : dt);
     this.research.update(dt, this.machines.filter((m) => m.machineId === 'lab'));
     this.commissionTimer -= dt;
-    if (this.commissionTimer <= 0) { this.commissionTimer = 0.5; this.completedCommissions.push(...this.commissions.update(this)); }
+    if (this.commissionTimer <= 0) { this.commissionTimer = 0.5; this.feed(); this.completedCommissions.push(...this.commissions.update(this)); }
     for (const site of this.entities.ofKind<ConstructionSite>('construction')) {
       site.update(dt);
       if (!site.done) continue;

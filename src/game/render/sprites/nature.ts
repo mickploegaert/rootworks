@@ -1,6 +1,6 @@
 import { hash2, makeRng, vnoise } from '../../core/noise.ts';
 import { P } from '../palette.ts';
-import { PixelCanvas, blob, fillPoly, line, mix, pick, rect, shadowEllipse, tint, type RGB } from '../pixel/PixelCanvas.ts';
+import { PixelCanvas, blob, fillPoly, line, mix, pick, ramp, rect, shadowEllipse, tint, type RGB } from '../pixel/PixelCanvas.ts';
 import { drawCylinder } from '../pixel/iso3d.ts';
 import { newBuilt, type Built } from './types.ts';
 
@@ -197,10 +197,13 @@ export function giantTree(): Built {
 
 // ---------------------------------------------------------------- undergrowth
 
+/** Russet for autumn shrubs: muted, so a bush never reads as a resource or a fire. */
+const AUTUMN = ramp('#3e2a18', '#5c3a1e', '#7a4e26', '#946232', '#ab7a42', '#c49656', '#d8b070');
+
 export function bush(kind: 'plain' | 'flower' | 'berry' | 'autumn', v = 0): Built {
   const b = newBuilt(60, 46, 30, 38), { pc } = b, seed = 300 + v * 7 + kind.length * 11;
   shadowEllipse(b.shadow!, 30 + 7, 39, 19, 6, SHADOW_ALPHA);
-  canopy(pc, 30, 27, 20, 12, kind === 'autumn' ? P.maple : P.leaf, seed, 10, 5, 8);
+  canopy(pc, 30, 27, 20, 12, kind === 'autumn' ? AUTUMN : P.leaf, seed, 10, 5, 8);
   const rng = makeRng(seed);
   const dots: RGB[] = kind === 'berry' ? [[176, 30, 52], [255, 112, 120]] : kind === 'flower' ? [[245, 240, 230], [250, 220, 120]] : [];
   for (let i = 0; i < 16 && dots.length; i++) {

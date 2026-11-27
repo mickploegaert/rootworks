@@ -97,6 +97,9 @@ export class SpriteLibrary {
 
   has(id: string): boolean { return this.assets.has(id); }
 
+  /** Every painted model (robot animation frames left out), for the dev gallery. */
+  ids(): string[] { return Object.keys(BUILDERS); }
+
   get(id: string): SpriteAsset {
     const a = this.assets.get(id);
     if (!a) throw new Error(`Unknown sprite: ${id}`);

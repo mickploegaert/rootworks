@@ -22,6 +22,11 @@ interface WaitingCall { name: string; args: HostValue[] }
 export class VM implements ProgramInstance {
   private frames: Frame[] = [];
   private readonly globals = new Map<string, Val>();
+
+  variables(): [string, string][] {
+    return [...this.globals].filter(([, v]) => !isFn(v))
+      .map(([k, v]) => [k, repr(v).slice(0, 60)]);
+  }
   private readonly builtins: Map<string, Val>;
   private waiting: WaitingCall | null = null;
   private reissue = false;

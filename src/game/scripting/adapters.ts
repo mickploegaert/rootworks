@@ -12,7 +12,7 @@ export class PythonAdapter implements LanguageAdapter {
 
   compile(source: string, options?: CompileOptions): CompiledProgram {
     const ast = parse(source);
-    if (options?.guided) checkFeatures(ast, options.firmware);
+    if (options?.guided) checkFeatures(ast, options.skills);
     const codes = compile(ast);
     return {
       start: (host) => new VM(codes, host),

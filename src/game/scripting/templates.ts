@@ -3,8 +3,8 @@ import type { LanguageId } from './types.ts';
 export interface Example {
   id: string;
   title: string;
-  /** Firmware tier the example needs in Guided mode (its syntax and functions). */
-  tier: number;
+  /** Skills the example needs in Guided mode (its syntax and functions). */
+  skills: readonly string[];
   code: string;
 }
 
@@ -15,10 +15,21 @@ const FIRST_PROGRAM = `# Hi! This is Seedling, your robot.
 go_to("scrap")    # walk to the nearest scrap pile
 `;
 
+const AUTOMATE = `# Automation: Seedling gathers scrap by itself, forever.
+# Needs the Loops skill. Press Stop to end it.
+while True:
+    go_to("scrap")
+    harvest()
+    harvest()
+    harvest()
+    deposit()
+`;
+
 export const PYTHON_EXAMPLES: readonly Example[] = [
-  { id: 'first', title: 'Lesson 1: first steps', tier: 0, code: FIRST_PROGRAM },
+  { id: 'first', title: 'Lesson 1: first steps', skills: [], code: FIRST_PROGRAM },
+  { id: 'forever', title: 'Automation: work forever', skills: ['loop'], code: AUTOMATE },
   {
-    id: 'kit', title: 'Lesson 2: craft and research', tier: 0, code: `# Lesson 2: craft and research
+    id: 'kit', title: 'Lesson 2: craft and research', skills: [], code: `# Lesson 2: craft and research
 # Needs a Workbench and a Research Lab (build them from the Build menu),
 # and a research project picked in the Research panel.
 
@@ -39,7 +50,7 @@ put("research_kit")
 `,
   },
   {
-    id: 'loops', title: 'Lesson 3: loops and functions', tier: 3, code: `# Lesson 3: loops and functions
+    id: 'loops', title: 'Lesson 3: loops and functions', skills: ['loop', 'functions', 'counter', 'operators', 'sense'], code: `# Lesson 3: loops and functions
 # Gather from the scrap pile until the robot is full,
 # deliver the load, and repeat until the pile is empty.
 
@@ -60,7 +71,7 @@ while True:
 `,
   },
   {
-    id: 'explore', title: 'Lesson 4: for loops and conditions', tier: 3, code: `# Lesson 4: for loops and conditions
+    id: 'explore', title: 'Lesson 4: for loops and conditions', skills: ['loop', 'counter', 'operators', 'sense', 'lists'], code: `# Lesson 4: for loops and conditions
 # Walk a square and report what is next to the robot at each corner.
 
 for direction in ["east", "south", "west", "north"]:
@@ -98,14 +109,15 @@ deposit();
 `,
 };
 
-/** Python ideas the command palette teaches, unlocked with firmware in Guided mode (see python/features.ts). */
-export const CONCEPTS: readonly { title: string; tier: number; doc: string; code: string }[] = [
-  { title: 'print', tier: 0, doc: 'Show a message in the console. Text goes in quotes.', code: 'print("Hello, valley!")' },
-  { title: '# comment', tier: 0, doc: 'A note for humans. The robot skips everything after #.', code: '# this is a note' },
-  { title: 'variable', tier: 1, doc: 'A named box that remembers a value, so you can use it later.', code: 'trips = 0' },
-  { title: 'arithmetic', tier: 1, doc: 'Calculate with + - * /. Here: add one to a counter.', code: 'trips = trips + 1' },
-  { title: 'if / else', tier: 2, doc: 'Decide: run some lines only when something is true.', code: 'if is_inventory_full():\n    deposit()\nelse:\n    harvest()' },
-  { title: 'while loop', tier: 3, doc: 'Repeat lines as long as something is true. while True repeats forever: real automation!', code: 'while True:\n    go_to("tree")\n    harvest()\n    deposit()' },
-  { title: 'for loop', tier: 3, doc: 'Repeat lines a fixed number of times.', code: 'for i in range(3):\n    harvest()' },
-  { title: 'function', tier: 3, doc: 'Give a group of lines a name, then use it like a command.', code: 'def gather(place):\n    go_to(place)\n    harvest()\n\ngather("tree")' },
+/** Python ideas the command palette teaches, unlocked with skills in Guided mode (see python/features.ts). */
+export const CONCEPTS: readonly { title: string; skill?: string; doc: string; code: string }[] = [
+  { title: 'print', doc: 'Show a message in the console. Text goes in quotes.', code: 'print("Hello, valley!")' },
+  { title: '# comment', doc: 'A note for humans. The robot skips everything after #.', code: '# this is a note' },
+  { title: 'variable', skill: 'counter', doc: 'A named box that remembers a value, so you can use it later.', code: 'trips = 0' },
+  { title: 'arithmetic', skill: 'operators', doc: 'Calculate with + - * /. Here: add one to a counter.', code: 'trips = trips + 1' },
+  { title: 'if / else', skill: 'sense', doc: 'Decide: run some lines only when something is true.', code: 'if is_inventory_full():\n    deposit()\nelse:\n    harvest()' },
+  { title: 'while loop', skill: 'loop', doc: 'Repeat lines as long as something is true. while True repeats forever: real automation!', code: 'while True:\n    go_to("tree")\n    harvest()\n    deposit()' },
+  { title: 'for loop', skill: 'loop', doc: 'Repeat lines a fixed number of times.', code: 'for i in range(3):\n    harvest()' },
+  { title: 'list', skill: 'lists', doc: 'Many values in one, in order. Loop over them with for.', code: 'for place in ["tree", "scrap"]:\n    go_to(place)\n    harvest()' },
+  { title: 'function', skill: 'functions', doc: 'Give a group of lines a name, then use it like a command.', code: 'def gather(place):\n    go_to(place)\n    harvest()\n\ngather("tree")' },
 ];

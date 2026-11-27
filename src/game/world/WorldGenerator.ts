@@ -198,6 +198,14 @@ export function generateWorld(seed: number, entities: EntityManager, bounds = VA
     const treeChance = biome.trees + (biome.id === 'forest' ? (fbm(x * 0.08, y * 0.08, 2, seed + 3) - 0.5) * 0.5 : 0);
     if (biome.treeIds.length && r < treeChance) {
       const sprite = biome.treeIds[Math.floor(rnd() * biome.treeIds.length)], amount = 12 + Math.floor(rnd() * 9);
+      // a tree needs a free ring around it, or crowns grow through trunks and the giant tree's roots; the random
+      // numbers are drawn first either way, so every save keeps the same valley
+      let crowded = false;
+      if (kept) for (let dy = -1; dy <= 1 && !crowded; dy++) for (let dx = -1; dx <= 1; dx++) {
+        const e = (dx || dy) ? entities.at(x + dx, y + dy) : null; // other small trees may crowd: that is a forest
+        if (e?.blocking && !(e instanceof ResourceNode && e.resourceId === 'wood' && e.width === 1)) { crowded = true; break; }
+      }
+      if (crowded) continue;
       if (kept) entities.add(new ResourceNode(x, y, sprite, 'wood', amount));
       else shadow.add(tileKey(x, y));
       continue;
@@ -212,6 +220,10 @@ export function generateWorld(seed: number, entities: EntityManager, bounds = VA
 
   entities.add(new Robot(129, 130));
   carveCoast(world, entities, bounds, seed);
+  // the coast is carved after planting: meadow plants left standing on the new beach go (driftwood, pebbles and reeds stay)
+  for (const e of [...entities.list()]) {
+    if (e instanceof Prop && e.category === 'vegetation' && world.get(e.tileX, e.tileY) === TileType.Sand && !/^(reeds|pebbles|sticks|log)/.test(e.spriteId)) entities.remove(e);
+  }
   return world;
 }
 

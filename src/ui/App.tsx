@@ -4,6 +4,7 @@ import { ProgramStore, type KeyValueStorage } from '../game/save/ProgramStore.ts
 import { SaveSlot, type SlotId } from '../game/save/GameSave.ts';
 import { SettingsStore, type Settings } from '../game/save/Settings.ts';
 import { Hud } from './Hud.tsx';
+import { play, soundFor } from './sound.ts';
 import { MainMenu, type StartRequest } from './menu/MainMenu.tsx';
 
 // the editor (CodeMirror + grammars) is a separate chunk so the world can load without waiting for it
@@ -98,6 +99,10 @@ function GameView({ slot, fresh, tutorial, store, settings, onSetting, onExit, o
     return () => window.clearInterval(t);
   }, [game, settings.autosave, slot]);
   useEffect(() => { game?.setReducedMotion(settings.reducedMotion); }, [game, settings.reducedMotion]);
+  // sound effects follow what the console reports, at the player's volume
+  const volume = useRef(settings.sound);
+  volume.current = settings.sound;
+  useEffect(() => game?.events.on('console', (e) => { const s = soundFor(e); if (s) play(s, volume.current); }), [game]);
 
   const showTutorial = tutorial || settings.showTutorial;
   return (
@@ -121,7 +126,7 @@ function GameView({ slot, fresh, tutorial, store, settings, onSetting, onExit, o
       )}
       {game && hud && (
         <Suspense fallback={null}>
-          <CodePanel game={game} store={store} tutorial={hud.tutorial} showTutorial={showTutorial} firmware={hud.research.firmware} open={codeOpen} onToggle={() => setCodeOpen((o) => !o)} />
+          <CodePanel game={game} store={store} tutorial={hud.tutorial} showTutorial={showTutorial} skills={hud.research.nodes.filter((n) => n.state === 'done').map((n) => n.id)} robots={hud.robotNames} open={codeOpen} onToggle={() => setCodeOpen((o) => !o)} />
         </Suspense>
       )}
     </div>

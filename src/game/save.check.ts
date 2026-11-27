@@ -105,6 +105,11 @@ assert.notEqual(stateHash(Simulation.generate(SEED)), stateHash(Simulation.gener
   assert.equal(bad((s) => { s.region = 'atlantis'; }), null, 'unknown region');
   assert.equal(bad((s) => { s.region = 'saltmarsh'; }), null, 'a region not in the game yet cannot be active');
   assert.equal(bad((s) => { s.regions.quarry = { ...s.regions.vale, robots: [{ x: 200, y: 1, facing: 0, cargo: {} }] }; }), null, 'checked against the quarry size');
+  const prog = { language: 'python', source: 'harvest()', runners: [null, null] };
+  assert.ok(bad((s) => { s.regions.vale.program = { ...prog, sources: ['go_to("tree")', null] }; }), 'per-robot programs load');
+  assert.ok(bad((s) => { s.regions.vale.program = prog; }), 'and so do saves from before them');
+  assert.equal(bad((s) => { s.regions.vale.program = { ...prog, sources: [5] }; }), null);
+  assert.equal(bad((s) => { s.sparks = -3; }), null, 'negative Sparks');
   assert.equal(validateSave('not a save'), null);
   // a sprite that is not in the build menu is skipped on load, never placed
   const sneaky = structuredClone(good);

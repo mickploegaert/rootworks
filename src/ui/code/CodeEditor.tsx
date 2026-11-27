@@ -1,7 +1,8 @@
 import { indentWithTab } from '@codemirror/commands';
 import { java } from '@codemirror/lang-java';
 import { javascript } from '@codemirror/lang-javascript';
-import { python } from '@codemirror/lang-python';
+import { python, pythonLanguage } from '@codemirror/lang-python';
+import type { CompletionContext } from '@codemirror/autocomplete';
 import { HighlightStyle, indentUnit, syntaxHighlighting } from '@codemirror/language';
 import { Compartment, EditorState, StateEffect, StateField, type Extension } from '@codemirror/state';
 import { Decoration, EditorView, keymap, type DecorationSet } from '@codemirror/view';
@@ -39,19 +40,21 @@ const marks = StateField.define<DecorationSet>({
 });
 
 const theme = EditorView.theme({
-  '&': { height: '100%', backgroundColor: '#23180f', color: '#f4e8d2', fontSize: 'var(--code-font, 14px)' },
+  '&': { height: '100%', backgroundColor: '#18120d', color: '#f2e8d8', fontSize: 'var(--code-font, 14px)' },
   '.cm-scroller': { scrollbarColor: '#6e4c33 #1c130c', fontFamily: "Consolas, 'Cascadia Mono', 'Courier New', monospace", lineHeight: '1.55' },
-  '.cm-content': { caretColor: '#ffcf6e', padding: '6px 0' },
-  '.cm-cursor': { borderLeftColor: '#ffcf6e', borderLeftWidth: '2px' },
-  '.cm-gutters': { backgroundColor: '#1c130c', color: '#7a6048', border: 'none', borderRight: '1px solid #4a3324' },
-  '.cm-activeLineGutter': { backgroundColor: 'transparent', color: '#c2a98b' },
-  '.cm-activeLine': { backgroundColor: 'rgba(255, 207, 110, 0.05)' },
+  '.cm-content': { caretColor: '#f2c062', padding: '10px 0' },
+  '.cm-cursor': { borderLeftColor: '#f2c062', borderLeftWidth: '2px' },
+  '.cm-gutters': { backgroundColor: '#18120d', color: '#6e5a48', border: 'none', paddingLeft: '6px' },
+  '.cm-activeLineGutter': { backgroundColor: 'transparent', color: '#f2c062' },
+  '.cm-activeLine': { backgroundColor: 'rgba(242, 192, 98, 0.045)' },
   '&.cm-focused .cm-selectionBackground, .cm-selectionBackground, ::selection': { backgroundColor: 'rgba(217, 138, 78, 0.32) !important' },
-  '.cm-exec-line': { backgroundColor: 'rgba(169, 207, 142, 0.16)', boxShadow: 'inset 3px 0 0 #a9cf8e' },
-  '.cm-error-line': { backgroundColor: 'rgba(255, 112, 90, 0.16)', boxShadow: 'inset 3px 0 0 #ff705a' },
+  '.cm-exec-line': { backgroundColor: 'rgba(143, 191, 108, 0.16)', boxShadow: 'inset 3px 0 0 #8fbf6c' },
+  '.cm-error-line': { backgroundColor: 'rgba(226, 119, 94, 0.16)', boxShadow: 'inset 3px 0 0 #e2775e' },
   '.cm-matchingBracket': { backgroundColor: 'rgba(255, 208, 98, 0.18)', outline: 'none' },
-  '.cm-tooltip, .cm-tooltip-autocomplete': { backgroundColor: '#2b1e17', border: '1px solid #6e4c33', color: '#f4e8d2' },
-  '.cm-tooltip-autocomplete > ul > li[aria-selected]': { backgroundColor: '#4a3222', color: '#ffcf6e' },
+  '.cm-tooltip, .cm-tooltip-autocomplete': { backgroundColor: '#2a1f17', border: '1px solid #5a4231', borderRadius: '6px', color: '#f2e8d8', overflow: 'hidden' },
+  '.cm-tooltip.cm-completionInfo': { padding: '8px 10px', maxWidth: '320px', fontFamily: 'var(--ui-font)', fontSize: '12px', lineHeight: '1.45' },
+  '.cm-completionDetail': { color: '#8f7d69', fontStyle: 'normal', marginLeft: '6px' },
+  '.cm-tooltip-autocomplete > ul > li[aria-selected]': { backgroundColor: '#3d2d21', color: '#f2c062' },
   '&.cm-focused': { outline: 'none' },
 }, { dark: true });
 
@@ -76,6 +79,8 @@ export interface CodeEditorProps {
   readOnly: boolean;
   activeLine: number | null;
   errorLine: number | null;
+  /** Robot commands offered while typing (Python), with their one-line help. */
+  completions?: { label: string; detail: string; info: string }[];
   /** Filled with the editor's insert function, for the tutorial, command palette and inspector hints. */
   apiRef?: { current: EditorApi | null };
 }
@@ -83,14 +88,16 @@ export interface CodeEditorProps {
 export interface EditorApi {
   /** Insert code below the cursor's line (or at the end if the player never placed the cursor), matching its indentation. */
   insert(code: string): void;
+  /** The selected text, or '' when nothing is selected. */
+  selection(): string;
 }
 
 /** CodeMirror 6 wrapped for React. The editor owns its document; React only pushes language, markers and read-only state. */
-export function CodeEditor({ language, value, onChange, onRun, readOnly, activeLine, errorLine, apiRef }: CodeEditorProps) {
+export function CodeEditor({ language, value, onChange, onRun, readOnly, activeLine, errorLine, apiRef, completions }: CodeEditorProps) {
   const host = useRef<HTMLDivElement>(null);
   const view = useRef<EditorView | null>(null);
-  const cbs = useRef({ onChange, onRun });
-  cbs.current = { onChange, onRun };
+  const cbs = useRef({ onChange, onRun, completions });
+  cbs.current = { onChange, onRun, completions };
   const comps = useRef({ lang: new Compartment(), ro: new Compartment() });
 
   useEffect(() => {
@@ -105,11 +112,17 @@ export function CodeEditor({ language, value, onChange, onRun, readOnly, activeL
           lang.of(LANG[language]()), ro.of(EditorState.readOnly.of(readOnly)),
           EditorView.updateListener.of((u) => { if (u.docChanged) cbs.current.onChange(u.state.doc.toString()); }),
           EditorView.contentAttributes.of({ 'aria-label': 'Program code' }),
+          // the robot's commands, offered as the player types a name
+          pythonLanguage.data.of({ autocomplete: (ctx: CompletionContext) => {
+            const word = ctx.matchBefore(/\w+/);
+            if (!word || (word.from === word.to && !ctx.explicit)) return null;
+            return { from: word.from, options: (cbs.current.completions ?? []).map((c) => ({ ...c, type: 'function', apply: `${c.label}()` })) };
+          } }),
         ],
       }),
     });
     view.current = v;
-    if (apiRef) apiRef.current = { insert: (code) => insertBelow(v, code) };
+    if (apiRef) apiRef.current = { insert: (code) => insertBelow(v, code), selection: () => { const r = v.state.selection.main; return v.state.sliceDoc(r.from, r.to); } };
     return () => { v.destroy(); view.current = null; if (apiRef) apiRef.current = null; };
     // created once; later prop changes are applied by the effects below
   }, []);

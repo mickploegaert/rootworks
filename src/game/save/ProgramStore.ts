@@ -17,6 +17,8 @@ export interface ProgramSave {
   tutorial: string[];
   /** Guided mode: syntax unlocks with firmware. Off is Engineer mode (any Python). */
   guided?: boolean;
+  /** The player's library: named snippets reused across programs and saves. */
+  library?: { name: string; code: string }[];
 }
 
 const KEY = 'rootworks.programs.v1';
@@ -42,6 +44,15 @@ export class ProgramStore {
   setCode(lang: LanguageId, code: string): void { this.data.code[lang] = code.slice(0, MAX_CODE); this.write(); }
   setTutorial(done: string[]): void { this.data.tutorial = [...done]; this.write(); }
 
+  get library(): readonly { name: string; code: string }[] { return this.data.library ?? []; }
+  /** Save a snippet under a name (the same name replaces it); at most 50. */
+  saveSnippet(name: string, code: string): void {
+    const lib = (this.data.library ?? []).filter((s) => s.name !== name);
+    this.data.library = [...lib, { name: name.slice(0, 40), code: code.slice(0, 20_000) }].slice(-50);
+    this.write();
+  }
+  removeSnippet(name: string): void { this.data.library = (this.data.library ?? []).filter((s) => s.name !== name); this.write(); }
+
   private read(): ProgramSave {
     const fresh: ProgramSave = { version: 1, language: 'python', code: {}, tutorial: [] };
     try {
@@ -54,6 +65,7 @@ export class ProgramStore {
         for (const l of LANGUAGE_IDS) if (typeof d.code[l] === 'string') fresh.code[l] = d.code[l]!.slice(0, MAX_CODE);
       }
       if (d.guided === false) fresh.guided = false;
+      if (Array.isArray(d.library)) fresh.library = d.library.filter((s) => s && typeof s.name === 'string' && typeof s.code === 'string').slice(0, 50);
       if (Array.isArray(d.tutorial)) fresh.tutorial = d.tutorial.filter((s): s is string => typeof s === 'string');
     } catch { /* corrupt or inaccessible save: start fresh */ }
     return fresh;

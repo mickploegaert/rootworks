@@ -1,5 +1,6 @@
 import { CommandHandle, DIRECTIONS, type CommandResult, type Direction, type RobotCommands } from '../api/RobotCommands.ts';
 import { RESOURCES, type ResourceId } from '../resources/ResourceDefs.ts';
+import { researchById } from '../research/ResearchDefs.ts';
 import { ScriptError, type HostFunction, type HostValue, type Pending } from './types.ts';
 
 /** Messages the bindings report while a program runs (shown in the console). */
@@ -56,24 +57,23 @@ const PLACE_ALIASES: Record<string, string> = {
 export const PLACE_HINT = '"tree", "stone", "scrap", "iron", "copper", "storage", "workbench", "sawmill", "kiln", "lab"';
 export const placeAlias = (p: string): string | null => PLACE_ALIASES[p.trim().toLowerCase().replace(/[\s-]+/g, '_')] ?? null;
 
-/** Firmware tiers by number. */
-export const FIRMWARE_NAMES = ['Boot', 'Counter', 'Sense', 'Loop'] as const;
 
 /**
  * The game functions available to player programs, built on RobotCommands. This is the only bridge
  * between interpreters and the game: no interpreter touches the simulation directly, and adding a
  * function here makes it available to every language at once.
  */
-export function createHostFunctions(cmd: RobotCommands, log: HostLog, firmware: () => number = () => 99): Map<string, HostFunction> {
+export function createHostFunctions(cmd: RobotCommands, log: HostLog, skills: () => ReadonlySet<string> | null = () => null): Map<string, HostFunction> {
   const fns = new Map<string, HostFunction>();
-  /** `tier`: firmware needed (gates are identical in Guided and Engineer mode). `optional`: trailing params that may be left out. */
-  const def = (name: string, params: string[], doc: string, call: (args: HostValue[]) => HostValue | Pending, opts: { tier?: number; optional?: number; example?: string } = {}) => {
-    const max = params.length, min = max - (opts.optional ?? 0), tier = opts.tier ?? 0;
+  /** `skill`: skill needed (null skills = everything; gates are identical in Guided and Engineer mode). `optional`: trailing params that may be left out. */
+  const def = (name: string, params: string[], doc: string, call: (args: HostValue[]) => HostValue | Pending, opts: { skill?: string; optional?: number; example?: string } = {}) => {
+    const max = params.length, min = max - (opts.optional ?? 0), skill = opts.skill;
     fns.set(name, {
-      name, params, doc, tier, example: opts.example ?? `${name}()`,
+      name, params, doc, skill, example: opts.example ?? `${name}()`,
       call: (args) => {
-        if (firmware() < tier) {
-          throw new ScriptError('runtime', `${name}() needs the ${FIRMWARE_NAMES[tier]} firmware (T${tier}). Research it at the Lab to unlock it.`);
+        const have = skills();
+        if (skill && have && !have.has(skill)) {
+          throw new ScriptError('runtime', `${name}() needs the ${researchById(skill)?.name ?? skill} skill. Buy it with Sparks in the Skills tab.`);
         }
         if (args.length < min || args.length > max) {
           const want = max ? `${min === max ? max : `${min} to ${max}`} argument${max > 1 ? 's' : ''} (${params.join(', ')})` : 'no arguments';
@@ -112,14 +112,14 @@ export function createHostFunctions(cmd: RobotCommands, log: HostLog, firmware: 
   // resources
   def('harvest', [], 'Harvest the deposit next to the robot (the one in front first). Returns True if anything was collected.', () =>
     act('harvest()', cmd.harvest(), (r) => `collected ${r.data?.amount} ${resName(String(r.data?.resource))}${r.data?.remaining === 0 ? ' (deposit used up)' : ''}`));
-  def('can_harvest', [], 'True if a deposit with stock is next to the robot and its cargo has room.', () => cmd.canHarvestHere(), { tier: 2, example: 'while can_harvest():' });
-  def('get_resource_type', [], 'Resource of the adjacent deposit ("wood", "stone", "iron_ore", "copper_ore", "scrap"), or None.', () => cmd.adjacentResource(), { tier: 2 });
+  def('can_harvest', [], 'True if a deposit with stock is next to the robot and its cargo has room.', () => cmd.canHarvestHere(), { skill: 'sense', example: 'while can_harvest():' });
+  def('get_resource_type', [], 'Resource of the adjacent deposit ("wood", "stone", "iron_ore", "copper_ore", "scrap"), or None.', () => cmd.adjacentResource(), { skill: 'sense' });
 
   // inventory
-  def('get_inventory', [], 'Cargo as a dictionary, e.g. {"wood": 4}.', () => cmd.inventory() as HostValue, { tier: 1, example: 'cargo = get_inventory()' });
-  def('get_inventory_capacity', [], 'How many units the robot can carry in total.', () => cmd.capacity().max, { tier: 1 });
-  def('get_inventory_count', [], 'How many units the robot is carrying.', () => cmd.capacity().used, { tier: 1 });
-  def('is_inventory_full', [], 'True when the robot cannot carry any more.', () => cmd.capacity().used >= cmd.capacity().max, { tier: 2, example: 'if is_inventory_full():' });
+  def('get_inventory', [], 'Cargo as a dictionary, e.g. {"wood": 4}.', () => cmd.inventory() as HostValue, { skill: 'counter', example: 'cargo = get_inventory()' });
+  def('get_inventory_capacity', [], 'How many units the robot can carry in total.', () => cmd.capacity().max, { skill: 'counter' });
+  def('get_inventory_count', [], 'How many units the robot is carrying.', () => cmd.capacity().used, { skill: 'counter' });
+  def('is_inventory_full', [], 'True when the robot cannot carry any more.', () => cmd.capacity().used >= cmd.capacity().max, { skill: 'sense', example: 'if is_inventory_full():' });
 
   // storage: walks to the depot if needed, then unloads
   def('deposit', [], 'Walk to storage and unload all cargo. Returns True if anything was stored.', () => {
@@ -141,8 +141,8 @@ export function createHostFunctions(cmd: RobotCommands, log: HostLog, firmware: 
   });
 
   // robot information
-  def('get_position', [], 'The robot\'s tile as [x, y].', () => { const p = cmd.position(); return [p.x, p.y]; }, { tier: 1, example: 'x, y = get_position()' });
-  def('get_robot_status', [], 'What the robot is doing: "idle", "moving", "harvesting", "returning" or "depositing".', () => cmd.state(), { tier: 2 });
+  def('get_position', [], 'The robot\'s tile as [x, y].', () => { const p = cmd.position(); return [p.x, p.y]; }, { skill: 'counter', example: 'x, y = get_position()' });
+  def('get_robot_status', [], 'What the robot is doing: "idle", "moving", "harvesting", "returning" or "depositing".', () => cmd.state(), { skill: 'sense' });
 
   // machines
   const itemArg = (name: string, v: HostValue | undefined) => {
@@ -171,6 +171,24 @@ export function createHostFunctions(cmd: RobotCommands, log: HostLog, firmware: 
     if (!place) throw new ScriptError('runtime', `go_to() doesn't know a place called "${p}". Try one of: ${PLACE_HINT}.`);
     return act(`go_to("${p}")`, cmd.goTo(place));
   }, { optional: 1, example: 'go_to("tree")' });
-  def('get_nearby', [], 'Name of the machine or storage next to the robot ("sawmill", "storage"...), or None.', () => cmd.adjacentPlace(), { tier: 2 });
+  def('deliver', ['item', 'place', 'amount'], 'Fetch an item from storage and put it into a machine: deliver("wood", "workbench"). Takes as much as fits unless you give an amount.', ([item, place, n]) => {
+    if (typeof item !== 'string' || typeof place !== 'string') throw new ScriptError('runtime', `deliver() needs an item and a place in quotes, like deliver("wood", "workbench"), but got ${describe(item ?? null)} and ${describe(place ?? null)}.`);
+    const target = placeAlias(place);
+    if (!target) throw new ScriptError('runtime', `deliver() doesn't know a place called "${place}". Try one of: ${PLACE_HINT}.`);
+    const amt = amountArg('deliver', n);
+    log.action(`deliver("${item}", "${place}")`);
+    // four queued steps; the result reports the first one that failed
+    const steps = [cmd.goTo('storage'), cmd.take(item, amt), cmd.goTo(target), cmd.put(item, amt)];
+    return {
+      pending: steps[3],
+      map: (r: CommandResult) => {
+        const failed = steps.map((h) => h.result).find((x) => x && !x.ok) ?? (r.ok ? null : r);
+        if (failed) { log.result(`deliver() failed: ${friendly(failed)}`, false); return false; }
+        log.result(`delivered ${listMoved(r)} to the ${String(r.data?.into)}`, true);
+        return true;
+      },
+    };
+  }, { skill: 'logistics', optional: 1, example: 'deliver("wood", "workbench")' });
+  def('get_nearby', [], 'Name of the machine or storage next to the robot ("sawmill", "storage"...), or None.', () => cmd.adjacentPlace(), { skill: 'sense' });
   return fns;
 }

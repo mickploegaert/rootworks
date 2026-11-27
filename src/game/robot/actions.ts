@@ -141,7 +141,7 @@ export class HarvestAction extends RobotAction {
     // re-check: another robot may have emptied it, or cargo changed
     const problem = harvestProblem(ctx, node);
     if (problem) return this.fail(problem);
-    const amount = node.take(Math.min(def.yieldPerAction, ctx.robot.inventory.free));
+    const amount = node.take(Math.min(def.yieldPerAction + ctx.robot.yieldBonus, ctx.robot.inventory.free));
     ctx.robot.inventory.add(node.resourceId, amount);
     this.data = { resource: node.resourceId, amount, remaining: node.amount };
     return 'done';

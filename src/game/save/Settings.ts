@@ -10,6 +10,7 @@ export interface Settings {
   uiScale: number;
   editorFont: number;
   showTutorial: boolean;
+  sound: number;
 }
 
 interface Choice<T> { value: T; label: string }
@@ -24,6 +25,8 @@ export interface SettingDef<K extends keyof Settings = keyof Settings> {
 export const SETTING_DEFS: readonly SettingDef[] = [
   { id: 'autosave', group: 'Gameplay', label: 'Autosave', help: 'How often the game saves to your current slot. It always saves when you leave.',
     choices: [{ value: 30, label: 'Every 30 s' }, { value: 60, label: 'Every minute' }, { value: 300, label: 'Every 5 min' }, { value: 0, label: 'Only on exit' }] },
+  { id: 'sound', group: 'Gameplay', label: 'Sound effects', help: 'Soft clicks and chimes when robots harvest, deliver and learn.',
+    choices: [{ value: 0.6, label: 'On' }, { value: 0.25, label: 'Quiet' }, { value: 0, label: 'Off' }] },
   { id: 'showTutorial', group: 'Programming', label: 'Tutorial checklist', help: 'Show the tutorial steps above the editor until you finish them.',
     choices: [{ value: true, label: 'Show' }, { value: false, label: 'Hide' }] },
   { id: 'editorFont', group: 'Programming', label: 'Editor text size', help: 'Font size of the code editor and console.',
@@ -37,7 +40,7 @@ export const SETTING_DEFS: readonly SettingDef[] = [
 const KEY = 'rootworks.settings.v1';
 
 export function defaultSettings(prefersReducedMotion = false): Settings {
-  return { autosave: 30, reducedMotion: prefersReducedMotion, uiScale: 1, editorFont: 14, showTutorial: true };
+  return { autosave: 30, reducedMotion: prefersReducedMotion, uiScale: 1, editorFont: 14, showTutorial: true, sound: 0.6 };
 }
 
 /** Reads and writes settings; anything stored that isn't one of an option's choices falls back to the default. */

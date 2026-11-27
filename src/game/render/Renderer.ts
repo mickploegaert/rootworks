@@ -153,6 +153,8 @@ export class Renderer {
 
   /** A small preview image of a sprite, for menus. */
   thumbnail(spriteId: string): string { return this.lib.thumbnail(spriteId); }
+  spriteIds(): string[] { return this.lib.ids(); }
+  hasSprite(id: string): boolean { return this.lib.has(id); }
 
   /** The camera's view in world space, with a margin so chunks load just before they scroll in. */
   view(camera: Camera) {

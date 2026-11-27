@@ -1,4 +1,4 @@
-import { Container, Sprite, Texture } from 'pixi.js';
+import { Container, Graphics, Sprite, Text, Texture } from 'pixi.js';
 import { HEIGHT_UNIT, depthOf, footprintDepth, tileToWorld, uvToWorld } from '../core/iso.ts';
 import { hash2 } from '../core/noise.ts';
 import type { Entity } from '../entities/Entity.ts';
@@ -7,11 +7,12 @@ import { ConstructionSite } from '../entities/ConstructionSite.ts';
 import { Machine } from '../entities/Machine.ts';
 import { ResourceNode } from '../entities/ResourceNode.ts';
 import { Robot } from '../entities/Robot.ts';
+import { StorageDepot } from '../entities/StorageDepot.ts';
 import { RESOURCES, type ResourceId } from '../resources/ResourceDefs.ts';
 import { RobotState } from '../robot/RobotState.ts';
 import type { World } from '../world/World.ts';
 import { robotSprite, type SpriteAsset, type SpriteLibrary } from './SpriteLibrary.ts';
-import type { RobotPose } from './sprites/robot.ts';
+import { BASKET, type RobotPose } from './sprites/robot.ts';
 
 interface Particle { s: Sprite; vx: number; vy: number; age: number; life: number; gravity: number }
 interface Smoke { x: number; y: number; rate: number; puffs: { s: Sprite; age: number; life: number }[]; timer: number }
@@ -31,7 +32,15 @@ interface View {
   lift: number;
   /** Robots: time until which the robot shows its error reaction, and the cargo icon floating above it. */
   upsetUntil?: number;
+  /** Robots: time until which the robot celebrates a delivery. */
+  cheerUntil?: number;
   cargo?: Sprite;
+  /** Robots: speech bubble with the current line of code (or an error), and the text it shows. */
+  bubble?: { root: Container; bg: Graphics; text: Text; shown: string };
+  /** Machines: a status lamp (green working, amber waiting for inputs, red output full). */
+  lamp?: Sprite;
+  /** Storage: little piles of what it holds, and the stock they show (rebuilt when it changes). */
+  piles?: { key: string; sprites: Sprite[] };
   fxTimer: number;
   /** Construction drone hovering over a building site. */
   drone?: Sprite;
@@ -116,6 +125,15 @@ export class EntityRenderer {
         v.drone.anchor.set(0.5); v.drone.tint = 0xffe8b0; v.drone.blendMode = 'add';
         this.fx.addChild(v.drone);
       } else this.attachFx(v, base, e);
+      if (e instanceof Machine) {
+        v.lamp = new Sprite(Texture.WHITE);
+        v.lamp.width = v.lamp.height = 5; v.lamp.anchor.set(0.5);
+        const pc = asset.source; // sit just above the building's highest painted pixel, not the canvas padding
+        let top = 0;
+        while (top < pc.h - 1 && ![...Array(pc.w).keys()].some((x) => pc.alpha(x, top))) top++;
+        v.lamp.position.set(base.x, base.y - asset.anchorY * pc.h + top - 5);
+        this.fx.addChild(v.lamp);
+      }
     }
     this.views.set(e.id, v);
     if (e instanceof ResourceNode && e.depleted) this.deplete(v, e, false); // already empty when it scrolled into view
@@ -160,7 +178,7 @@ export class EntityRenderer {
     const v = this.views.get(e.id);
     if (!v) return;
     this.detachFx(v);
-    v.body.destroy(); v.shadow?.destroy(); v.drone?.destroy();
+    v.body.destroy(); v.shadow?.destroy(); v.drone?.destroy(); v.lamp?.destroy(); v.cargo?.destroy(); v.piles?.sprites.forEach((sp) => sp.destroy()); v.bubble?.root.destroy({ children: true });
     this.views.delete(e.id);
   }
 
@@ -196,6 +214,13 @@ export class EntityRenderer {
       }
       const idle = e instanceof Machine && !e.working && e.machineId !== 'lab' ? 0.2 : 1; // a cold kiln barely glows
       for (const g of v.glows) g.s.alpha = idle * Math.min(1, g.alpha * lampBoost) * (1 + g.flicker * (Math.sin(t * 9 + g.ph) * 0.6 + Math.sin(t * 23 + g.ph * 2) * 0.4));
+      if (v.lamp && e instanceof Machine) {
+        const r = e.recipe, full = !!r && e.progress >= r.time;
+        const working = e.machineId === 'lab' ? e.input.get('research_kit') > 0 || e.progress > 0 : e.working && !full;
+        v.lamp.tint = full ? 0xe0604a : working ? 0x8fdc7a : 0xf0b840;
+        v.lamp.alpha = working ? 0.75 + Math.sin(t * 4) * 0.25 : full ? (t % 1 < 0.5 ? 1 : 0.35) : 0.9;
+      }
+      if (e instanceof StorageDepot) this.updatePiles(v, e);
       if (e instanceof ConstructionSite) this.updateSite(v, e, t, dt);
       if (v.beacon) v.beacon.s.alpha = ((t + v.beacon.ph) % 1.6) < 0.35 ? 1 : 0.1;
       if (v.smoke) this.updateSmoke(v.smoke, dt, !(e instanceof Machine) || e.working);
@@ -211,11 +236,14 @@ export class EntityRenderer {
     const moving = r.state === RobotState.Moving || r.state === RobotState.Returning;
     if (v.upsetUntil === undefined) { // first frame: react to failed commands (not to Stop)
       v.upsetUntil = 0;
-      r.queue.events.on('finished', (res) => { if (!res.ok && res.error !== 'stopped') v.upsetUntil = this.time + 1.6; });
+      r.queue.events.on('finished', (res) => {
+        if (!res.ok && res.error !== 'stopped') v.upsetUntil = this.time + 1.6;
+        if (res.ok && res.action === 'deposit()') v.cheerUntil = this.time + 1.1; // a little hop after every delivery
+      });
     }
     this.time = t;
-    const pose: RobotPose = v.upsetUntil > t ? 'error' : moving ? 'walk' : r.state === RobotState.Harvesting || r.state === RobotState.Depositing ? 'work' : 'idle';
-    const fps = { idle: 3, walk: 9, work: 7, error: 6 }[pose];
+    const pose: RobotPose = v.upsetUntil > t ? 'error' : (v.cheerUntil ?? 0) > t ? 'celebrate' : moving ? 'walk' : r.state === RobotState.Harvesting || r.state === RobotState.Depositing ? 'work' : 'idle';
+    const fps = { idle: 3, walk: 9, work: 7, celebrate: 8, error: 6 }[pose];
     const asset = this.lib.get(robotSprite(r.facing, pose, this.robotStage));
     const tex = asset.frames[Math.floor(t * fps) % asset.frames.length];
     if (v.body.texture !== tex) { v.body.texture = tex; v.shadow!.texture = asset.shadow!; }
@@ -228,15 +256,19 @@ export class EntityRenderer {
     v.shadow!.position.set(x, y);
     v.body.zIndex = depthOf(r.posX, r.posY) + 1;
 
+    this.updateBubble(v, r, x, y, t);
+
     // what the robot carries floats above its head, so cargo is visible in the world, not only in a panel
     const [carried] = r.inventory.entries().sort((a, b) => b[1] - a[1])[0] ?? [];
-    if (carried && !v.cargo) { v.cargo = new Sprite(); v.cargo.anchor.set(0.5, 1); this.bodies.addChild(v.cargo); }
+    if (carried && !v.cargo) { v.cargo = new Sprite(); v.cargo.anchor.set(0.5, 0.7); v.cargo.scale.set(0.75); this.bodies.addChild(v.cargo); }
     if (v.cargo) {
       v.cargo.visible = !!carried;
       if (carried) {
         v.cargo.texture = this.lib.items.get(carried as ResourceId)!;
-        v.cargo.position.set(x, y - 66 - Math.round(Math.sin(t * 3) * 1.5) - (this.robotStage >= 2 ? 6 : 0));
-        v.cargo.zIndex = v.body.zIndex + 0.5;
+        // it rides in the wicker basket on the robot's back: behind the body when the robot faces us
+        const [bx, by] = BASKET[r.facing];
+        v.cargo.position.set(x + bx, y + by + 1);
+        v.cargo.zIndex = v.body.zIndex + (r.facing >= 2 ? 0.01 : -0.01);
       }
     }
 
@@ -255,6 +287,57 @@ export class EntityRenderer {
         s.vx = (f.x - x) * 1.6; s.vy = (fy - 20 - (y - 18)) * 1.6 - 40; s.gravity = 80; s.life = 0.6;
       }
     }
+  }
+
+  /** Storage shows its stock: a pile per resource beside the barn, one to three icons high as the amount grows. */
+  private updatePiles(v: View, s: StorageDepot): void {
+    const stock = s.inventory.entries().filter(([, n]) => n > 0).sort((a, b) => b[1] - a[1]).slice(0, 5);
+    const key = stock.map(([id, n]) => `${id}:${n >= 30 ? 2 : 1}`).join(',');
+    if (v.piles?.key === key) return;
+    for (const sp of v.piles?.sprites ?? []) sp.destroy();
+    const base = this.groundOf(s), sprites: Sprite[] = [];
+    // on the apron in front of the barn's far half (the tile below its right end): never on the barn itself
+    const end = { x: (s.width - 1 - 1) * 32 + 32, y: (s.width - 1 + 1) * 16 + 2 };
+    const SPOTS: [number, number][] = [[-10, 0], [10, 0], [0, -6], [0, 6], [-20, 6]];
+    stock.forEach(([id, n], i) => {
+      const height = n >= 30 ? 2 : 1;
+      for (let k = 0; k < height; k++) {
+        const sp = new Sprite(this.lib.items.get(id as ResourceId)!);
+        sp.anchor.set(0.5, 1);
+        sp.position.set(base.x + end.x + SPOTS[i][0], base.y + end.y + SPOTS[i][1] - k * 7);
+        sp.zIndex = depthOf(s.tileX + s.width - 0.5, s.tileY + s.depth + 0.5) + SPOTS[i][1] * 0.001 + k * 0.0001; // the apron tile's own depth
+        this.bodies.addChild(sp);
+        sprites.push(sp);
+      }
+    });
+    v.piles = { key, sprites };
+  }
+
+  /** A small pixel-style bubble above the robot: its current line of code, or a red "!" with what went wrong. */
+  private updateBubble(v: View, r: Robot, x: number, y: number, t: number): void {
+    const want = r.bubble ? `${r.bubble.error ? '! ' : ''}${r.bubble.text}` : '';
+    if (!want) { if (v.bubble) v.bubble.root.visible = false; return; }
+    if (!v.bubble) {
+      const root = new Container(), bg = new Graphics();
+      const text = new Text({ text: '', style: { fontFamily: 'Consolas, monospace', fontSize: 9, fill: 0xf4e8d2 }, resolution: 4 });
+      root.addChild(bg, text);
+      this.fx.addChild(root);
+      v.bubble = { root, bg, text, shown: '' };
+    }
+    const b = v.bubble;
+    b.root.visible = true;
+    if (b.shown !== want) {
+      b.shown = want;
+      b.text.text = want;
+      b.text.style.fill = r.bubble!.error ? 0xffd6c8 : 0xf4e8d2;
+      const w = Math.ceil(b.text.width) + 10, h = 15;
+      b.bg.clear()
+        .roundRect(-w / 2, -h, w, h, 3).fill({ color: r.bubble!.error ? 0x7a2a20 : 0x2b1e16, alpha: 0.92 }).stroke({ color: r.bubble!.error ? 0xff705a : 0xa8764a, width: 1 })
+        .poly([-3, 0, 3, 0, 0, 4]).fill({ color: r.bubble!.error ? 0x7a2a20 : 0x2b1e16, alpha: 0.92 });
+      b.text.position.set(-w / 2 + 5, -h + 2);
+    }
+    const lift = this.robotStage >= 2 ? 6 : 0;
+    b.root.position.set(x, y - 72 - lift + (r.bubble!.error ? Math.round(Math.sin(t * 20)) : 0));
   }
 
   private spawn(x: number, y: number, color: number): Particle {

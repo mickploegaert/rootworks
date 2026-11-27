@@ -1,10 +1,12 @@
-import { useEffect, useState } from 'react';
+import { useCallback, useEffect, useState } from 'react';
 import type { RegionId } from '../game/world/regions.ts';
 import { WorldMap } from './WorldMap.tsx';
-import { ItemIcon } from './ItemIcon.tsx';
+import { ItemIcon, Spark } from './ItemIcon.tsx';
+import { SkillTree } from './SkillTree.tsx';
+import { DevMenu } from './DevMenu.tsx';
+
 import type { ResourceId } from '../game/resources/ResourceDefs.ts';
-import type { CatalogEntry, Game, HudSnapshot, ResearchView, ResourceLine, SelectionInfo } from '../game/Game.ts';
-import { FIRMWARE_NAMES } from '../game/scripting/hostApi.ts';
+import type { CatalogEntry, Game, HudSnapshot, ResourceLine, SelectionInfo } from '../game/Game.ts';
 import type { SlotId } from '../game/save/GameSave.ts';
 import type { Settings } from '../game/save/Settings.ts';
 import { SettingsForm } from './menu/MainMenu.tsx';
@@ -31,18 +33,26 @@ interface Props {
  */
 export function Hud({ hud, onBuild, thumbnail, onMenu, game, settings, onSetting, slot, onTravel }: Props) {
   const [researchOpen, setResearchOpen] = useState(false);
+  const closeSkills = useCallback(() => setResearchOpen(false), []);
   const [mapOpen, setMapOpen] = useState(false);
+  const [help, setHelp] = useState(false);
   useEffect(() => {
     const key = (e: KeyboardEvent) => {
       const t = e.target as HTMLElement | null;
-      if (t?.closest('input, textarea, select, [contenteditable="true"], .cm-editor')) return;
-      if (e.key === 'm' || e.key === 'M') setMapOpen((o) => !o);
+      if (t?.closest?.('input, textarea, select, [contenteditable="true"], .cm-editor')) return;
+      const k = e.key.toLowerCase();
+      if (e.ctrlKey || e.metaKey || e.altKey) return;
+      if (k === 'm') setMapOpen((o) => !o);
+      if (k === 'k') setResearchOpen((o) => !o);
+      if (k === 'b') document.querySelector<HTMLButtonElement>('.build-toggle')?.click();
+      if (k === 'p') document.querySelector<HTMLButtonElement>('.code-tab, .code-head button.icon')?.click();
+      if (e.key === '?') setHelp((o) => !o);
     };
     window.addEventListener('keydown', key);
     return () => window.removeEventListener('keydown', key);
   }, []);
   const [paused, setPaused] = useState<null | 'menu' | 'settings'>(null);
-  const rv = hud.research, current = rv.nodes.find((n) => n.id === rv.current);
+  const rv = hud.research, buyable = rv.nodes.filter((n) => n.state === 'available').length;
   return (
     <>
       <header className="plate">
@@ -52,7 +62,7 @@ export function Hud({ hud, onBuild, thumbnail, onMenu, game, settings, onSetting
           Map <small>{hud.region.name}</small>
         </button>
         <button type="button" className={`research-toggle ${researchOpen ? 'on' : ''}`} onClick={() => setResearchOpen(!researchOpen)} aria-expanded={researchOpen}>
-          Research <small title={current ? `Researching ${current.name}` : undefined}>T{rv.firmware} {current ? `· ${current.name} ${Math.round(rv.progress * 100)}%` : FIRMWARE_NAMES[rv.firmware] ?? ''}</small>
+          Skills <small className="sparks" title="Sparks: earned from lessons, commissions and the Lab. Spend them on skills."><Spark />{rv.sparks}{buyable ? ` · ${buyable} to learn` : ''}</small>
         </button>
         <button type="button" className="icon new-game" onClick={() => setPaused('menu')} title="Settings, save and quit">Menu</button>
       </header>
@@ -79,14 +89,24 @@ export function Hud({ hud, onBuild, thumbnail, onMenu, game, settings, onSetting
         </div>
       )}
       <StorageBar lines={hud.storage} />
-      <Commissions list={hud.commissions} />
+      <Commissions list={hud.commissions} daily={hud.daily} challenges={hud.challenges} />
       {mapOpen && <WorldMap regions={hud.regions} onTravel={onTravel} onClose={() => setMapOpen(false)} />}
-      {researchOpen && <ResearchPanel rv={rv} onSelect={(id) => game.selectResearch(id)} onClose={() => setResearchOpen(false)} />}
+      {researchOpen && <SkillTree rv={rv} onBuy={(id) => game.buySkill(id)} onClose={closeSkills} />}
       {hud.selection && <Inspector sel={hud.selection} game={game} />}
+      <DevMenu game={game} regions={hud.regions} onTravel={onTravel} />
+      {help && (
+        <section className="panel hotkeys" aria-label="Keyboard shortcuts" onClick={() => setHelp(false)}>
+          <h2>Shortcuts</h2>
+          <dl>
+            {[['B', 'Build menu'], ['K', 'Skill tree'], ['P', 'Program editor'], ['M', 'World map'], ['Ctrl+Enter', 'Run the program'], ['R', 'Rotate while building'],
+              ['Esc', 'Close / clear selection'], ['WASD', 'Scroll the map'], ['Wheel', 'Zoom'], ['?', 'This list']].map(([k, d]) => <div key={k}><dt><kbd>{k}</kbd></dt><dd>{d}</dd></div>)}
+          </dl>
+        </section>
+      )}
       <RobotPanel robot={hud.robot} log={hud.log} />
       <BuildMenu catalog={hud.catalog} build={hud.build} onBuild={onBuild} thumbnail={thumbnail} />
       <aside className="hint">
-        <b>Click</b> inspect · <b>Drag</b> pan · <b>Wheel</b> zoom · <b>WASD</b> scroll · <b>Esc</b> clear
+        <b>Click</b> inspect · <b>Drag</b> pan · <b>B</b> build · <b>K</b> skills · <b>P</b> program · <b>?</b> all keys
       </aside>
     </>
   );
@@ -158,12 +178,12 @@ function BuildMenu({ catalog, build, onBuild, thumbnail }: { catalog: CatalogEnt
               const afford = c.cost.every((x) => x.have >= x.amount);
               return (
                 <button key={c.id} type="button" className={`card ${build?.id === c.id ? 'on' : ''} ${c.locked ? 'locked' : ''}`}
-                  disabled={!!c.locked} title={c.locked ? `${c.description} Requires research: ${c.locked}.` : c.description}
+                  disabled={!!c.locked} title={c.locked ? `${c.description} Needs the ${c.locked} skill.` : c.description}
                   onClick={() => onBuild(build?.id === c.id ? null : c.id)}>
                   <img src={thumbnail(c.sprite)} alt="" />
                   <span className="name">{c.name}</span>
                   {c.locked
-                    ? <span className="lock">Research: {c.locked}</span>
+                    ? <span className="lock">Skill: {c.locked}</span>
                     : <span className={`cost ${afford ? '' : 'short'}`}>
                         {c.cost.map((x) => <span key={x.id} className={x.have >= x.amount ? '' : 'miss'}><ItemIcon id={x.id} />{x.amount}</span>)}
                       </span>}
@@ -184,41 +204,45 @@ function Cost({ lines }: { lines: ResourceLine[] }) {
   return <span className="costs">{lines.map((l) => <span key={l.id} className="res"><ItemIcon id={l.id} explain />{l.amount} {l.name}</span>)}</span>;
 }
 
-function Commissions({ list }: { list: HudSnapshot['commissions'] }) {
-  if (!list.length) return null;
+/** The board on the left: today's order, the villagers' commissions, and the optional challenges with stars. */
+function Commissions({ list, daily, challenges }: { list: HudSnapshot['commissions']; daily: HudSnapshot['daily']; challenges: HudSnapshot['challenges'] }) {
+  const [tab, setTab] = useState<'orders' | 'challenges'>('orders');
+  const stars = challenges.reduce((s, c) => s + c.stars, 0);
   return (
-    <section className="panel commissions" aria-label="Commissions">
-      <span className="label">Commission board</span>
-      {list.map((c) => (
-        <div key={c.id} className="commission">
-          <div className="row"><span>{c.title}</span><b>{c.progress}/{c.target}</b></div>
-          <div className="bar"><div style={{ width: `${(c.progress / c.target) * 100}%` }} /></div>
-          <span className="muted">Reward: <Cost lines={c.reward} /></span>
-        </div>
-      ))}
-    </section>
-  );
-}
-
-function ResearchPanel({ rv, onSelect, onClose }: { rv: ResearchView; onSelect(id: string | null): void; onClose(): void }) {
-  return (
-    <section className="panel research" aria-label="Research">
-      <div className="row">
-        <h2>Research</h2>
-        <span className="muted">Robots put research kits into a Lab; each kit is a step of progress.</span>
-        <button type="button" className="icon" onClick={onClose} aria-label="Close research">close</button>
-      </div>
-      <div className="nodes">
-        {rv.nodes.map((n) => (
-          <button key={n.id} type="button" className={`node n-${n.state}`} disabled={n.state === 'done' || n.state === 'locked'}
-            onClick={() => onSelect(n.state === 'current' ? null : n.id)} aria-pressed={n.state === 'current'}>
-            <span className="row"><b>{n.name}</b><span className="kits">{n.kits} kits</span></span>
-            <span className="desc">{n.description}</span>
-            {n.state === 'current' && <span className="bar progress"><span style={{ width: `${rv.progress * 100}%` }} /></span>}
-            <span className="status">{n.state === 'done' ? 'Done' : n.state === 'current' ? 'Researching: click to pause' : n.state === 'locked' ? `Needs ${n.needs.join(', ')}` : 'Click to research'}</span>
-          </button>
-        ))}
-      </div>
+    <section className="panel commissions" aria-label="Commission board">
+      <nav className="tabs board-tabs" role="tablist">
+        <button type="button" role="tab" aria-selected={tab === 'orders'} className={tab === 'orders' ? 'on' : ''} onClick={() => setTab('orders')}>Orders</button>
+        <button type="button" role="tab" aria-selected={tab === 'challenges'} className={tab === 'challenges' ? 'on' : ''} onClick={() => setTab('challenges')}>Challenges <small>{stars}/{challenges.length * 3}</small></button>
+      </nav>
+      {tab === 'orders' ? (
+        <>
+          <div className={`commission daily ${daily.done ? 'done' : ''}`}>
+            <span className="label">Today's order · {daily.from}</span>
+            <div className="row"><span className="res"><ItemIcon id={daily.item.id} explain />{daily.item.amount} {daily.item.name}</span><b>{daily.done ? 'Done' : `${daily.got}/${daily.item.amount}`}</b></div>
+            <div className="bar"><div style={{ width: `${(daily.got / daily.item.amount) * 100}%` }} /></div>
+            <span className="muted">Deliver it to storage today · reward <b className="sparks"><Spark />{daily.sparks}</b></span>
+          </div>
+          {list.map((c) => (
+            <div key={c.id} className="commission">
+              <div className="row"><span>{c.title}</span><b>{c.progress}/{c.target}</b></div>
+              <div className="bar"><div style={{ width: `${(c.progress / c.target) * 100}%` }} /></div>
+              <span className="muted">{c.from} · <b className="sparks"><Spark />{c.sparks}</b> <Cost lines={c.reward} /></span>
+            </div>
+          ))}
+        </>
+      ) : (
+        <>
+          <p className="muted challenge-intro">Optional goals for your programs. Every new star pays 2 Sparks.</p>
+          {challenges.map((c) => (
+            <div key={c.id} className="commission challenge" title={c.description}>
+              <div className="row"><span>{c.title}</span><span className="stars" aria-label={`${c.stars} of 3 stars`}>{[0, 1, 2].map((k) => <i key={k} className={k < c.stars ? 'on' : ''} />)}</span></div>
+              <span className="muted">{c.description}</span>
+              <span className="muted tiers">{c.tiers.map((t, k) => <span key={k} className={k < c.stars ? 'got' : ''}>{c.better === 'lower' ? '≤' : '≥'}{t}{c.unit}</span>)}
+                {c.best !== null && <span className="best">best {c.best}{c.unit}</span>}</span>
+            </div>
+          ))}
+        </>
+      )}
     </section>
   );
 }
@@ -227,6 +251,7 @@ function Inspector({ sel, game }: { sel: SelectionInfo; game: Game }) {
   const r = sel.entity?.resource, m = sel.entity?.machine, w = sel.entity?.workshop, p = sel.parcel;
   return (
     <aside className="panel inspector">
+      {sel.entity?.sprite && <img className="inspector-preview" src={game.thumbnail(sel.entity.sprite)} alt="" />}
       <h2>{sel.entity ? sel.entity.name : sel.tileName}</h2>
       <p className="muted">{sel.biome} · {sel.tileName} · tile {sel.tileX}, {sel.tileY}{sel.elevation > 1 ? ` · elevation ${sel.elevation}` : ''}</p>
       {sel.entity && <p>{sel.entity.description}</p>}

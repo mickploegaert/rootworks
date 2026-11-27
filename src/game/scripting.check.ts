@@ -172,16 +172,18 @@ fails('window.alert(1)', /NameError/);
 fails('print.__class__', /must be called as a method/);
 fails('"x".constructor("return 1")()', /no method "constructor"/);
 
-// ---------------------------------------------------------------- Guided mode: syntax follows the firmware
+// ---------------------------------------------------------------- Guided mode: syntax follows the skills bought, in any order
 {
-  const g = (src: string, firmware: number) => py.compile(src, { guided: true, firmware });
-  g('move("north")\nharvest()', 0);
-  assert.throws(() => g('x = 1', 0), /Variables unlock with the Counter firmware \(T1\)/);
-  g('x = 1 + 2', 1);
-  assert.throws(() => g('if can_harvest():\n    harvest()', 1), /Decisions .* Sense firmware \(T2\)/);
-  assert.throws(() => g('while True:\n    harvest()', 2), (e: unknown) => e instanceof ScriptError && /Loops/.test(e.message) && e.line === 1);
-  g('while True:\n    harvest()', 3);
-  py.compile('while True:\n    harvest()', { guided: false, firmware: 0 }); // Engineer mode: any syntax
+  const g = (src: string, ...skills: string[]) => py.compile(src, { guided: true, skills: new Set(skills) });
+  g('move("north")\nharvest()');
+  assert.throws(() => g('x = 1'), /Variables need the Variables skill/);
+  g('while True:\n    harvest()', 'loop'); // loops first: automation does not wait for variables
+  assert.throws(() => g('x = 1 + 2', 'counter'), /Arithmetic .* Operators skill/);
+  g('x = 1 + 2', 'counter', 'operators');
+  assert.throws(() => g('if can_harvest():\n    harvest()', 'counter', 'operators'), /Decisions .* Sense skill/);
+  assert.throws(() => g('while True:\n    harvest()', 'sense'), (e: unknown) => e instanceof ScriptError && /Loops/.test(e.message) && e.line === 1);
+  assert.throws(() => g('def f():\n    harvest()', 'loop'), /Functions \(def\) need the Functions skill/);
+  py.compile('while True:\n    harvest()', { guided: false, skills: new Set() }); // Engineer mode: any syntax
 }
 
 // ---------------------------------------------------------------- unavailable languages say so honestly
@@ -331,6 +333,8 @@ print("at", get_position())`;
   assert.equal(b.code('java'), '// java');
   assert.equal(b.code('typescript'), null);
   assert.deepEqual(b.tutorial, ['move']);
+  b.saveSnippet('make_kit', 'deliver("wood", "workbench")'); b.saveSnippet('make_kit', 'put()');
+  assert.deepEqual(new ProgramStore(storage).library, [{ name: 'make_kit', code: 'put()' }], 'the library survives a refresh; same name replaces');
   mem.set('rootworks.programs.v1', '{not json');
   assert.equal(new ProgramStore(storage).language, 'python', 'corrupt save falls back to defaults');
   mem.set('rootworks.programs.v1', JSON.stringify({ language: 'cobol', code: { python: 5 } }));
@@ -351,12 +355,15 @@ print("at", get_position())`;
   assert.deepEqual(new Tutorial(['move', 'harvest', 'storage', 'deposit']).completed, ['move', 'harvest', 'deposit'], 'old saves with the removed storage step keep their progress');
   assert.equal(t.mark('lab'), false, 'built early: remembered, but not its turn yet');
   assert.equal(t.observe({ ok: true, action: 'deposit()' }), true);
-  assert.equal(t.mark('workbench'), true);
+  assert.equal(t.mark('workbench'), false, 'automation comes first');
+  assert.equal(t.mark('automate'), true, 'buying Loops completes it, and the early Workbench with it');
   assert.equal(t.observe({ ok: true, action: 'take(research_kit)', data: { moved: { research_kit: 1 } } }), true);
   assert.ok(t.steps.find((s) => s.id === 'lab')!.done, 'the early Lab completes as soon as its turn comes');
   assert.equal(t.mark('research'), true);
   assert.ok(t.complete);
   assert.deepEqual(new Tutorial(['move', 'deposit']).completed, ['move'], 'restored progress must be a prefix');
+  assert.deepEqual(new Tutorial(['move', 'harvest', 'deposit', 'workbench']).completed, ['move', 'harvest', 'deposit', 'automate', 'workbench'], 'a lesson added later does not cost old saves their progress');
+  assert.deepEqual(new Tutorial(['move', 'harvest', 'deposit']).completed, ['move', 'harvest', 'deposit'], 'but it is still taught when the save has not passed it');
 }
 
 
@@ -369,6 +376,7 @@ print("at", get_position())`;
   runner.step(); runner.tick();
   assert.equal(runner.state, 'paused', 'a line without an action pauses right after');
   assert.equal(runner.line, 2, 'and shows the next line');
+  assert.deepEqual(runner.variables, [['a', '1']], 'the debugger sees the variable, not the functions');
   runner.step(); runner.tick(); runner.tick();
   assert.equal(runner.state, 'running', 'still waiting for the robot');
   pending!.result = { ok: true, action: 'act' };

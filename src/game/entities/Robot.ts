@@ -28,6 +28,10 @@ export class Robot extends Entity {
   readonly queue = new ActionQueue();
   /** Tiles per second. */
   speed = 2.2;
+  /** Speech bubble for presentation: the line the robot's program is on, or what went wrong. */
+  bubble: { text: string; error: boolean } | null = null;
+  /** Extra units every harvest() collects (Sharp tools). */
+  yieldBonus = 0;
 
   constructor(x: number, y: number, name = 'RW-01 "Seedling"') {
     super(x, y, 'robot', name, 'A salvaged utility bot. It follows queued commands.');

@@ -5,12 +5,14 @@ import { EntityManager } from './entities/EntityManager.ts';
 import { Machine } from './entities/Machine.ts';
 import { ResourceNode } from './entities/ResourceNode.ts';
 import { Robot } from './entities/Robot.ts';
+import { Prop } from './entities/Prop.ts';
 import { StorageDepot } from './entities/StorageDepot.ts';
 import { LANGUAGES } from './scripting/adapters.ts';
 import { createHostFunctions } from './scripting/hostApi.ts';
 import { ProgramRunner } from './scripting/ProgramRunner.ts';
 import { ScriptError } from './scripting/types.ts';
 import { Simulation } from './Simulation.ts';
+import { applyProgress, captureProgress } from './save/GameSave.ts';
 import { TileType, World } from './world/World.ts';
 import { isAdjacent } from './world/Pathfinder.ts';
 
@@ -68,16 +70,20 @@ const ticks = (sim: Simulation, seconds: number) => { for (let i = 0; i < second
   r = run(sim, api.take());
   assert.equal(r.ok, false, 'an idle machine with nothing ready fails at once');
 
-  // research Counter (2 kits) at the lab
+  // the Lab turns kits into Sparks, Sparks buy skills at once
+  sim.research.sparks = 0; // the Workbench and Lab commissions already paid out: start from nothing
   assert.equal(sim.research.firmware, 0);
-  assert.equal(sim.research.select('sense'), 'Needs Counter firmware (T1) first');
-  assert.equal(sim.research.select('counter'), null);
+  assert.equal(sim.research.buy('sense'), 'Needs Operators first');
+  assert.equal(sim.research.buy('loop'), 'Needs 3 more Sparks');
   assert.ok(run(sim, api.goTo('lab')).ok);
   r = run(sim, api.put('research_kit'));
   assert.ok(r.ok, r.error);
   ticks(sim, 9);
-  assert.ok(sim.research.isDone('counter'), 'two kits at 4 s each');
-  assert.equal(sim.research.firmware, 1);
+  assert.equal(sim.research.sparks, 4, 'two kits, 2 Sparks each, 4 s per kit');
+  assert.equal(sim.research.buy('loop'), null);
+  assert.ok(sim.research.isDone('loop'));
+  assert.equal(sim.research.sparks, 1);
+  assert.equal(sim.research.firmware, 1, 'one programming skill');
 
   // a machine refuses what its recipe doesn't use; storage takes anything
   run(sim, api.goTo('workbench'));
@@ -95,9 +101,9 @@ const ticks = (sim: Simulation, seconds: number) => { for (let i = 0; i < second
 // ---------------------------------------------------------------- firmware gates on the robot API
 {
   const { sim, robot } = field();
-  let tier = 0;
+  const skills = new Set<string>();
   const out: string[] = [];
-  const host = { functions: createHostFunctions(new RobotCommands(sim, robot), { action() {}, result() {} }, () => tier), print: (t: string) => out.push(t) };
+  const host = { functions: createHostFunctions(new RobotCommands(sim, robot), { action() {}, result() {} }, () => skills), print: (t: string) => out.push(t) };
   const errOf = (src: string) => {
     const runner = new ProgramRunner(LANGUAGES.python.compile(src), host);
     let err: ScriptError | null = null;
@@ -106,11 +112,11 @@ const ticks = (sim: Simulation, seconds: number) => { for (let i = 0; i < second
     return err as ScriptError | null;
   };
   assert.equal(errOf('move("north")'), null, 'T0 functions always work');
-  assert.match(errOf('print(get_position())')!.message, /needs the Counter firmware \(T1\)/);
-  tier = 1;
+  assert.match(errOf('print(get_position())')!.message, /needs the Variables skill/);
+  skills.add('counter');
   assert.equal(errOf('print(get_position())'), null);
-  assert.match(errOf('print(can_harvest())')!.message, /Sense firmware \(T2\)/);
-  tier = 2;
+  assert.match(errOf('print(can_harvest())')!.message, /needs the Sense skill/);
+  skills.add('sense');
   assert.equal(errOf('print(can_harvest(), get_nearby())'), null);
 }
 
@@ -118,7 +124,7 @@ const ticks = (sim: Simulation, seconds: number) => { for (let i = 0; i < second
 {
   const sim = Simulation.generate(1337);
   const store = sim.storages[0].inventory;
-  assert.equal(sim.reclaimProblem(5, 3), 'Research Surveying first');
+  assert.equal(sim.reclaimProblem(5, 3), 'Learn the Surveying skill first');
   sim.research.completed.add('surveying');
   assert.match(sim.reclaimProblem(5, 3)!, /Need 10 more wood/);
   store.add('wood', 40); store.add('stone', 30);
@@ -130,7 +136,7 @@ const ticks = (sim: Simulation, seconds: number) => { for (let i = 0; i < second
   assert.deepEqual(sim.reclaimCost(), { wood: 16, stone: 10 }, 'the next parcel costs more');
   assert.equal(sim.reclaimProblem(5, 2), null, 'now adjacent');
 
-  assert.equal(sim.assembleProblem(), 'Research Robot assembly first');
+  assert.equal(sim.assembleProblem(), 'Learn the Robot assembly skill first');
   sim.research.completed.add('assembly'); sim.research.completed.add('cargo');
   store.add('planks', 8); store.add('scrap', 6);
   assert.equal(sim.assembleRobot({ x: 128, y: 130 }), null);
@@ -182,7 +188,7 @@ const ticks = (sim: Simulation, seconds: number) => { for (let i = 0; i < second
   const tree = new ResourceNode(10, 6, 'oak_0', 'wood', 20), pile = new ResourceNode(10, 7, 'scrap_0', 'scrap', 20);
   sim.entities.add(tree); sim.entities.add(pile);
   const out: string[] = [];
-  const host = { functions: createHostFunctions(new RobotCommands(sim, robot), { action() {}, result() {} }, () => 0), print: (t: string) => out.push(t) };
+  const host = { functions: createHostFunctions(new RobotCommands(sim, robot), { action() {}, result() {} }, () => new Set()), print: (t: string) => out.push(t) };
   const exec = (src: string) => {
     const runner = new ProgramRunner(LANGUAGES.python.compile(src), host);
     let err: ScriptError | null = null;
@@ -199,16 +205,62 @@ const ticks = (sim: Simulation, seconds: number) => { for (let i = 0; i < second
   assert.match(exec('go_to("treee")')!.message, /doesn't know a place called "treee". Try one of: "tree"/);
 }
 
-// ---------------------------------------------------------------- kits in a Lab never sit unexplained: no project picked starts the first open one
+// ---------------------------------------------------------------- old saves: progress carries over into the skill tree
 {
   const { sim } = field();
-  const lab = new Machine(9, 3, 'lab_building', 'lab', 'Research Lab', '', 2, 2);
-  sim.entities.add(lab);
-  const picked: string[] = [];
-  sim.research.events.on('autoPicked', (n) => picked.push(n.id));
-  lab.input.add('research_kit', 2);
-  ticks(sim, 9);
-  assert.deepEqual(picked, ['counter']);
-  assert.ok(sim.research.isDone('counter'));
+  applyProgress(sim, { research: ['counter', 'loop'], researching: { id: 'sense', kits: 2 }, commissions: [] });
+  assert.ok(sim.research.isDone('operators') && sim.research.isDone('functions'), 'Counter taught arithmetic, Loop taught def');
+  assert.equal(sim.research.sparks, 4, 'kits already fed to a project come back as Sparks');
+  assert.equal(captureProgress(sim).sparks, 4);
+}
+
+// ---------------------------------------------------------------- windmills speed up machines in reach
+{
+  const { sim } = field();
+  const near = new Machine(2, 2, 'sawmill', 'sawmill', 'Sawmill', '', 2, 2), far = new Machine(12, 2, 'sawmill', 'sawmill', 'Sawmill', '', 2, 2);
+  sim.entities.add(near); sim.entities.add(far);
+  sim.entities.add(new Prop(4, 5, 'turbine', 'Windmill', '', 'structure'));
+  near.input.add('wood', 2); far.input.add('wood', 2);
+  ticks(sim, 3);
+  assert.equal(near.output.get('planks'), 3, 'boosted: a 4 s batch is done in under 3 s');
+  assert.equal(far.output.get('planks'), 0, 'out of range: still working');
+}
+
+// ---------------------------------------------------------------- tiered robot skills, the Feeder and deliver()
+{
+  const { sim, robot, storage } = field();
+  for (const id of ['speed1', 'speed2', 'cargo', 'cargo2', 'yield1']) sim.research.completed.add(id);
+  sim.applySkills(robot);
+  assert.equal(robot.inventory.capacity, 22);
+  assert.ok(Math.abs(robot.speed - 2.2 * 1.4) < 1e-9, 'two speed tiers');
+  assert.equal(robot.yieldBonus, 1);
+  // the Feeder fills a machine next to storage by itself
+  const bench = new Machine(1, 7, 'workbench', 'workbench', 'Workbench', '', 2, 2);
+  sim.entities.add(bench);
+  storage.inventory.add('wood', 10); storage.inventory.add('scrap', 5);
+  ticks(sim, 1);
+  assert.equal(bench.input.get('wood'), 0, 'no Feeder skill: nothing moves');
+  sim.research.completed.add('feeder');
+  ticks(sim, 1);
+  assert.ok(bench.input.get('wood') > 0 && bench.input.get('scrap') > 0, 'Feeder pulls the recipe inputs from storage');
+  // deliver(): storage -> machine in one command
+  sim.research.completed.delete('feeder'); // the Feeder would keep draining storage into the bench
+  storage.inventory.add('wood', 10);
+  const far = new Machine(12, 2, 'sawmill', 'sawmill', 'Sawmill', '', 2, 2);
+  sim.entities.add(far);
+  const skills = new Set(['logistics']);
+  const dlog: string[] = [];
+  const host = { functions: createHostFunctions(new RobotCommands(sim, robot), { action() {}, result: (t) => dlog.push(t) }, () => skills), print() {} };
+  const runner = new ProgramRunner(LANGUAGES.python.compile('deliver("wood", "sawmill", 2)'), host);
+  for (let i = 0; i < 60 * 60 && runner.isActive; i++) { runner.tick(); sim.update(1 / 60); }
+  assert.equal(runner.state, 'finished');
+  assert.ok(far.working || far.output.get('planks') > 0, dlog.join(' | ')); // the timber is already being sawn
+  skills.clear();
+  const locked = new ProgramRunner(LANGUAGES.python.compile('deliver("wood", "sawmill")'), host);
+  let err = '';
+  locked.events.on('error', (e) => { err = e.message; });
+  for (let i = 0; i < 10 && locked.isActive; i++) locked.tick();
+  assert.match(err, /needs the Logistics skill/);
+  assert.throws(() => LANGUAGES.python.compile('xs = [1, 2]', { guided: true, skills: new Set(['counter']) }), /Lists \(\[\.\.\.\]\) need the Lists skill/);
 }
 console.log('production ok');

@@ -22,7 +22,9 @@ import { ScriptError, type HostApi, type LanguageId } from './scripting/types.ts
 import { Tutorial, type TutorialStep } from './tutorial/Tutorial.ts';
 import { isAdjacent } from './world/Pathfinder.ts';
 import { PARCEL, TILE_INFO } from './world/World.ts';
-import { RESEARCH, researchById } from './research/ResearchDefs.ts';
+import { RESEARCH, researchById, type SkillBranch } from './research/ResearchDefs.ts';
+import { KIT_SECONDS, SPARKS_PER_KIT } from './research/ResearchSystem.ts';
+import { CHALLENGES, SPARKS_PER_STAR, codeLines, dailyOrder, today, type RunStats } from './progress/Challenges.ts';
 import type { ResourceAmounts } from './inventory/Inventory.ts';
 import { BIOMES } from './world/biomes.ts';
 import { REGIONS, START_REGION, regionById, regionLock, type RegionDef, type RegionId } from './world/regions.ts';
@@ -38,6 +40,8 @@ export interface SelectionInfo {
   biome: string;
   entity?: {
     name: string; description: string; kind: string;
+    /** Sprite id for the inspector's preview (absent for robots, which are animated). */
+    sprite?: string;
     resource?: { id: ResourceId; name: string; use: string; color: number; amount: number; max: number; harvestTime: number; yieldPerAction: number; depleted: boolean };
     /** A building site: how far the drones are. */
     construction?: number;
@@ -69,10 +73,10 @@ export interface RegionView {
 }
 
 export interface ResearchView {
+  /** Programming skills learned (0..3), for the sprout and labels. */
   firmware: number;
-  current: string | null;
-  progress: number;
-  nodes: { id: string; name: string; description: string; kits: number; state: 'done' | 'current' | 'available' | 'locked'; needs: string[] }[];
+  sparks: number;
+  nodes: { id: string; name: string; description: string; cost: number; branch: SkillBranch; state: 'done' | 'available' | 'expensive' | 'locked'; needs: string[] }[];
 }
 
 /** Everything the HUD shows. Plain data, rebuilt by the game; React only renders it. */
@@ -89,8 +93,13 @@ export interface HudSnapshot {
   /** Time of day, e.g. "Dusk". */
   timeOfDay: string;
   research: ResearchView;
-  commissions: { id: string; title: string; progress: number; target: number; reward: ResourceLine[] }[];
+  commissions: { id: string; title: string; progress: number; target: number; reward: ResourceLine[]; sparks: number; from: string }[];
   robots: number;
+  robotNames: string[];
+  challenges: { id: string; title: string; description: string; unit: string; tiers: number[]; better: 'higher' | 'lower'; stars: number; best: number | null }[];
+  daily: { from: string; item: ResourceLine; got: number; done: boolean; sparks: number };
+  /** The running program's numbers, for the editor. */
+  run: { delivered: number; seconds: number; lines: number } | null;
   guided: boolean;
   region: { id: RegionId; name: string };
   regions: RegionView[];
@@ -113,6 +122,8 @@ export interface ProgramStatus {
   line: number | null;
   /** Line of the last syntax/runtime error. */
   errorLine: number | null;
+  /** The focused robot's variables, for the debugger panel. */
+  variables?: [string, string][];
 }
 
 export type PlayerCommand = 'move' | 'harvest' | 'deposit' | 'stop';
@@ -128,6 +139,8 @@ export interface GameEvents {
 }
 
 const CONSOLE_MAX_PRINT = 2000;
+/** Sparks each finished tutorial lesson pays: three lessons buy Loops. */
+const LESSON_SPARKS = 1;
 
 const STEP = 1 / 60;
 const LOG_SIZE = 5;
@@ -191,10 +204,20 @@ export class Game {
   private consoleId = 0;
   /** The last state change came from Step: its pause is not announced. */
   private lastStep = false;
+  /** Simulation speed (dev cheat). */
+  private speed = 1;
+  /** The current program run's statistics (for the challenges and the editor's live numbers). */
+  private run: { start: number; stats: RunStats } | null = null;
+  private runCheck = 5;
+  /** Tutorial lessons already rewarded with Sparks. */
+  private lessonsPaid = 0;
   private readonly tutorial: Tutorial;
 
   /** Source of the running program, kept for saving. */
-  private programSource: { language: LanguageId; source: string } | null = null;
+  /** The program each robot was last started with (index = robot). */
+  private sources: ({ language: LanguageId; source: string } | null)[] = [];
+  /** The robot whose current line the editor highlights. */
+  private focus = 0;
 
   private constructor(seed: number, tutorialDone: readonly string[], dayStart?: number, private readonly loaded?: SaveFile) {
     this.worldSeed = loaded?.seed ?? seed;
@@ -208,9 +231,11 @@ export class Game {
     this.commands = new RobotCommands(this.sim, this.robot);
     this.renderer = new Renderer(this.sim.world, dayStart);
     this.robot.queue.events.on('finished', (r) => this.report(r));
+    for (const r of this.sim.robots) this.watchRobot(r);
     this.tutorial = new Tutorial(tutorialDone);
+    this.lessonsPaid = this.tutorial.completed.length;
     this.sim.research.events.on('completed', (n) => this.onResearch(n.id, n.name));
-    this.sim.research.events.on('autoPicked', (n) => this.out('system', `The Lab had Research Kits but no project, so it started on ${n.name}. You can change it in the Research panel.`));
+    this.sim.research.events.on('sparked', (n) => { this.note(`+${n} Sparks from the Lab`, true); this.tutorialMark('research'); this.emitHud(true); });
     this.sim.entities.events.on('added', (e) => {
       if (e instanceof Machine && (e.machineId === 'workbench' || e.machineId === 'lab')) this.tutorialMark(e.machineId);
     });
@@ -222,41 +247,84 @@ export class Game {
     const fns = createHostFunctions(new RobotCommands(this.sim, robot), {
       action: (text) => this.out('action', tag() + text),
       result: (text, ok) => this.out(ok ? 'ok' : 'fail', tag() + text),
-    }, () => this.sim.research.firmware);
+    }, () => this.sim.research.completed);
     return { functions: fns, print: (text) => this.out('print', tag() + (text.length > CONSOLE_MAX_PRINT ? text.slice(0, CONSOLE_MAX_PRINT) + '...' : text)) };
   }
 
   private get programActive(): boolean { return this.runners.some((r) => r?.isActive); }
 
+  /** Count what a robot delivers to storage: for the run's statistics and today's order. */
+  private watchRobot(r: Robot): void {
+    r.queue.events.on('finished', (res) => {
+      if (!res.ok) return;
+      const moved = (res.action === 'deposit()' ? res.data?.deposited : res.data?.into === 'storage' ? res.data?.moved : null) as Record<string, number> | null | undefined;
+      if (!moved) return;
+      for (const [id, n] of Object.entries(moved)) {
+        if (this.run) { this.run.stats.delivered += n; this.run.stats.byItem[id as ResourceId] = (this.run.stats.byItem[id as ResourceId] ?? 0) + n; }
+        if (this.sim.challenges.deliver(id as ResourceId, n)) {
+          const o = dailyOrder(today());
+          this.sim.research.sparks += o.sparks;
+          this.out('system', `Daily order done: ${o.from} thanks you for ${o.amount} ${RESOURCES[o.item].name}. +${o.sparks} Sparks.`);
+          this.note(`Daily order for ${o.from} delivered`, true);
+        }
+      }
+    });
+  }
+
+  /** Score the running program against the challenges; new stars pay Sparks. */
+  private scoreRun(): void {
+    if (!this.run) return;
+    this.run.stats.seconds = this.time - this.run.start;
+    for (const { c, stars, gained } of this.sim.challenges.evaluate(this.run.stats)) {
+      this.sim.research.sparks += gained * SPARKS_PER_STAR;
+      this.out('system', `Challenge "${c.title}": ${'★'.repeat(stars)}${'☆'.repeat(3 - stars)} +${gained * SPARKS_PER_STAR} Sparks.`);
+      this.note(`${c.title}: ${stars} star${stars > 1 ? 's' : ''}`, true);
+    }
+  }
+
+  private endRun(): void {
+    if (!this.run || this.programActive) return;
+    this.scoreRun();
+    const s = this.run.stats;
+    if (s.delivered > 0) this.out('system', `This run delivered ${s.delivered} items in ${Math.round(s.seconds)} s (${Math.round((s.delivered / Math.max(1, s.seconds)) * 60)} per minute) with ${s.lines} lines of code.`);
+    this.run = null;
+  }
+
   private tutorialMark(id: string): void { if (this.tutorial.mark(id)) this.tutorialProgress(); }
 
   private tutorialProgress(): void {
     const step = this.tutorial.steps.filter((s) => s.done).at(-1)!;
-    this.out('system', this.tutorial.complete ? 'Tutorial complete! Your valley is yours to grow.' : `Tutorial step done: ${step.label}.`);
+    const earned = (this.tutorial.completed.length - this.lessonsPaid) * LESSON_SPARKS;
+    this.lessonsPaid = this.tutorial.completed.length;
+    this.sim.research.sparks += Math.max(0, earned);
+    const reward = earned > 0 ? ` +${earned} Spark${earned > 1 ? 's' : ''}.` : '';
+    this.out('system', (this.tutorial.complete ? 'Tutorial complete! Your valley is yours to grow.' : `Lesson done: ${step.label}.`) + reward);
     this.events.emit('tutorial', this.tutorial.completed);
     this.emitHud(true);
   }
 
   private onResearch(id: string, name: string): void {
-    this.out('system', `Research complete: ${name}.`);
-    this.note(`Researched ${name}`, true);
-    if (id === 'cargo') for (const r of this.sim.robots) r.inventory.capacity = 16;
+    this.out('system', `New skill: ${name}.${researchById(id)?.code ? ' Your robots understand more Python now.' : ''}`);
+    this.note(`Learned ${name}`, true);
+    for (const r of this.sim.robots) this.sim.applySkills(r);
     this.renderer.setRobotStage(this.sim.research.firmware);
-    this.tutorialMark('research');
+    if (id === 'loop') this.tutorialMark('automate');
   }
 
   static async create(host: HTMLElement, opts: { seed?: number; tutorialDone?: readonly string[]; dayStart?: number; save?: SaveFile | null } = {}): Promise<Game> {
     const g = new Game(opts.seed ?? 1337, opts.save?.tutorial ?? opts.tutorialDone ?? [], opts.dayStart, opts.save ?? undefined);
     await g.init(host);
     const p = g.loaded?.regions[g.region.id]?.program;
-    if (p) g.runProgram(p.language, p.source, p.runners); // continue where the save left off
+    if (p?.sources) p.runners.forEach((r, i) => r && g.runProgram(p.language, p.sources![i] ?? p.source, i, p.runners)); // each robot its own program
+    else if (p) g.runProgram(p.language, p.source, null, p.runners); // continue where the save left off
     return g;
   }
 
   /** Everything needed to continue this game later. */
   save(): SaveFile {
     const runners = this.runners.map((r) => r?.save() ?? null);
-    const program = this.programSource && runners.some(Boolean) ? { ...this.programSource, runners } : null;
+    const first = this.sources.find((x, i) => x && runners[i]);
+    const program = first ? { language: first.language, source: first.source, runners, sources: runners.map((r, i) => (r ? this.sources[i]?.source ?? null : null)) } : null;
     return composeSave(this.sim, this.regionSaves, { worldSeed: this.worldSeed, time: this.time, tutorial: this.tutorial.completed, program });
   }
 
@@ -415,7 +483,7 @@ export class Game {
   private frame(dt: number): void {
     this.input.update(dt);
     // fixed-step simulation so robot programs run deterministically
-    for (this.acc += dt; this.acc >= STEP; this.acc -= STEP) {
+    for (this.acc += dt * this.speed; this.acc >= STEP; this.acc -= STEP) {
       for (const r of this.runners) r?.tick();
       this.sim.update(STEP);
     }
@@ -429,6 +497,7 @@ export class Game {
     this.renderer.selection.setRoute(this.robot.queue.running?.route() ?? []);
     this.renderer.render(this.time, dt, this.camera);
     if ((this.hudTimer -= dt) <= 0) { this.hudTimer = 0.1; this.emitHud(); }
+    if (this.run && (this.runCheck -= dt) <= 0) { this.runCheck = 5; this.scoreRun(); } // stars can be earned while a program runs
   }
 
   // ------------------------------------------------------------ selection + HUD
@@ -457,7 +526,7 @@ export class Game {
     const e = entities.at(t.x, t.y);
     let entity: SelectionInfo['entity'];
     if (e) {
-      entity = { name: e.name, description: e.description, kind: e.kind };
+      entity = { name: e.name, description: e.description, kind: e.kind, sprite: this.renderer.hasSprite(e.spriteId) ? e.spriteId : undefined };
       if (e instanceof ResourceNode) {
         const d = e.def;
         entity.resource = { id: d.id, name: d.name, use: d.use, color: d.color, amount: e.amount, max: e.maxAmount, harvestTime: d.harvestTime, yieldPerAction: d.yieldPerAction, depleted: e.depleted };
@@ -476,8 +545,7 @@ export class Game {
     }
     if (entity && e) entity.program = programFor(e);
     if (e instanceof Machine && e.machineId === 'lab' && entity) {
-      const r = this.sim.research, cur = r.current ? researchById(r.current) : null;
-      entity.research = cur ? `Researching ${cur.name}: ${r.kitsDone} of ${cur.kits} kits used.` : 'No project picked yet. Open Research at the top to choose one (or the Lab picks the first when kits arrive).';
+      entity.research = `Turns each Research Kit into ${SPARKS_PER_KIT} Sparks (${KIT_SECONDS} s). Spend Sparks on new skills in the Skills tab. You have ${this.sim.research.sparks}.`;
     }
     if ((e?.spriteId === 'lab' || e?.spriteId === 'bay') && entity) { // the workshop, or a region's field bay
       entity.workshop = { problem: this.sim.assembleProblem(), cost: Object.entries(Simulation.ROBOT_COST).map(([id, n]) => line(id as ResourceId, n!)), robots: this.sim.robots.length };
@@ -489,8 +557,9 @@ export class Game {
 
   // ------------------------------------------------------------ player actions (UI): research, machines, land, robots
 
-  selectResearch(id: string | null): void {
-    const problem = this.sim.research.select(id);
+  /** Spend Sparks on a skill from the skill tree. */
+  buySkill(id: string): void {
+    const problem = this.sim.research.buy(id);
     if (problem) this.note(problem, false);
     this.emitHud(true);
   }
@@ -517,7 +586,7 @@ export class Game {
     const at = { x: bay.tileX, y: bay.tileY + 1 };
     const problem = this.sim.assembleRobot(at);
     this.note(problem ?? `${this.sim.robots.at(-1)!.name} assembled`, !problem);
-    if (!problem) this.out('system', `A new robot joined. Press Run to start your program on all ${this.sim.robots.length} robots.`);
+    if (!problem) { this.watchRobot(this.sim.robots.at(-1)!); this.out('system', `A new robot joined. Press Run to start your program on all ${this.sim.robots.length} robots.`); }
     this.emitHud(true);
   }
 
@@ -528,10 +597,10 @@ export class Game {
   private researchView(): ResearchView {
     const r = this.sim.research;
     return {
-      firmware: r.firmware, current: r.current, progress: r.progress,
+      firmware: r.firmware, sparks: r.sparks,
       nodes: RESEARCH.map((n) => ({
-        id: n.id, name: n.name, description: n.description, kits: n.kits,
-        state: r.isDone(n.id) ? 'done' : r.current === n.id ? 'current' : r.available(n) ? 'available' : 'locked',
+        id: n.id, name: n.name, description: n.description, cost: n.cost, branch: n.branch,
+        state: r.isDone(n.id) ? 'done' : r.available(n) ? (r.sparks >= n.cost ? 'available' : 'expensive') : 'locked',
         needs: n.requires.filter((q) => !r.isDone(q)).map((q) => researchById(q)?.name ?? q),
       })),
     };
@@ -549,7 +618,8 @@ export class Game {
       selection: this.selectionInfo(),
       log: this.log,
       tutorial: this.tutorial.steps,
-      catalog: BUILDINGS.map((d) => ({
+      // buildings whose research is not in the game yet stay hidden: a lock with no key reads as a bug
+      catalog: BUILDINGS.filter((d) => d.requires === null || researchById(d.requires)).map((d) => ({
         id: d.id, name: d.name, description: d.description, category: d.category, sprite: d.variants[0],
         cost: Object.entries(d.cost).map(([id, n]) => ({ ...line(id as ResourceId, n!), have: storage?.get(id as ResourceId) ?? 0 })),
         locked: this.sim.building.isUnlocked(d) ? null : (d.requires && researchById(d.requires)?.name) ?? d.requires,
@@ -559,9 +629,15 @@ export class Game {
       research: this.researchView(),
       commissions: this.sim.commissions.active().map((c) => ({
         id: c.id, title: c.title, progress: Math.min(c.target, c.measure(this.sim)), target: c.target,
-        reward: Object.entries(c.reward).map(([id, n]) => line(id as ResourceId, n!)),
+        reward: Object.entries(c.reward).map(([id, n]) => line(id as ResourceId, n!)), sparks: c.sparks, from: c.from,
       })),
       robots: this.sim.robots.length,
+      robotNames: this.sim.robots.map((r) => r.name),
+      challenges: CHALLENGES.map((c) => ({ id: c.id, title: c.title, description: c.description, unit: c.unit, tiers: [...c.tiers], better: c.better,
+        stars: this.sim.challenges.stars.get(c.id) ?? 0, best: this.sim.challenges.best.get(c.id) ?? null })),
+      daily: (() => { const o = dailyOrder(today()), d = this.sim.challenges.daily; const mine = d.day === o.day;
+        return { from: o.from, item: line(o.item, o.amount), got: mine ? Math.min(d.got, o.amount) : 0, done: mine && d.done, sparks: o.sparks }; })(),
+      run: this.run ? { delivered: this.run.stats.delivered, seconds: Math.round(this.time - this.run.start), lines: this.run.stats.lines } : null,
       guided: this.guided,
       region: { id: this.region.id, name: this.region.name },
       regions: this.regionsView(),
@@ -574,38 +650,53 @@ export class Game {
 
   // ------------------------------------------------------------ programs
 
-  /** Compile and start a program. Replaces any running program and cancels manual commands. */
-  runProgram(language: LanguageId, source: string, resumeFrom?: (RunnerSave | null)[]): void {
-    this.stopProgram(true);
-    for (const r of this.sim.robots) new RobotCommands(this.sim, r).stop();
+  /**
+   * Compile and start a program on every robot (robot = null) or on one robot, which keeps the others running their own
+   * programs: one robot can chop timber while another feeds the workbench.
+   */
+  runProgram(language: LanguageId, source: string, robot: number | null = null, resumeFrom?: (RunnerSave | null)[]): void {
+    const robots = this.sim.robots;
+    const targets = robot === null || !robots[robot] ? robots.map((_, i) => i) : [robot];
+    if (targets.length === robots.length) this.stopProgram(true);
+    for (const i of targets) { this.runners[i]?.stop(); new RobotCommands(this.sim, robots[i]).stop(); }
     let compiled;
     try {
-      compiled = LANGUAGES[language].compile(source, { guided: this.guided, firmware: this.sim.research.firmware });
+      compiled = LANGUAGES[language].compile(source, { guided: this.guided, skills: this.sim.research.completed });
     } catch (e) {
       this.reportError(e instanceof ScriptError ? e : new ScriptError('syntax', String(e)), language);
       return;
     }
-    const robots = this.sim.robots;
+    const started: number[] = [];
     try {
-      this.runners = robots.map((robot, i) => {
-        if (resumeFrom && !resumeFrom[i]) return null; // this robot had already finished
-        return new ProgramRunner(compiled, this.hostFor(robot), undefined, resumeFrom?.[i] ?? undefined);
-      });
+      for (const i of targets) {
+        if (resumeFrom && !resumeFrom[i]) { this.runners[i] = null; continue; } // this robot had already finished
+        this.runners[i] = new ProgramRunner(compiled, this.hostFor(robots[i]), undefined, resumeFrom?.[i] ?? undefined);
+        this.sources[i] = { language, source };
+        started.push(i);
+      }
     } catch {
-      this.runners = [];
+      for (const i of targets) this.runners[i] = null;
       this.out('system', 'The saved program could not be resumed; press Run to start it again.');
       return;
     }
-    const n = this.runners.filter(Boolean).length;
-    this.out('system', resumeFrom ? 'Program resumed from your save.' : `Program started (${LANGUAGES[language].name})${n > 1 ? ` on ${n} robots` : ''}.`);
-    this.programSource = { language, source };
-    this.runners.forEach((runner, i) => {
-      if (!runner) return;
-      const robot = robots[i];
-      if (i === 0 || !this.runners[0]) runner.events.on('line', (line) => this.setProgram({ ...this.program, line }));
-      runner.events.on('error', (err) => { this.reportError(err, language, n > 1 ? robot.name : undefined); new RobotCommands(this.sim, robot).stop(); });
-      runner.events.on('state', () => this.programStateChanged(language));
-    });
+    const many = robots.length > 1;
+    const who = started.length === robots.length ? (many ? ` on all ${robots.length} robots` : '') : ` on ${started.map((i) => robots[i].name).join(', ')}`;
+    this.out('system', resumeFrom ? `Program resumed from your save${many ? who : ''}.` : `Program started (${LANGUAGES[language].name})${who}.`);
+    this.focus = started[0] ?? 0;
+    if (!resumeFrom) this.run = { start: this.time, stats: { delivered: 0, byItem: {}, lines: codeLines(source), robots: this.runners.filter((r) => r?.isActive).length, seconds: 0 } };
+    const lines = source.split('\n');
+    for (const i of started) {
+      const runner = this.runners[i]!, r = robots[i];
+      runner.events.on('line', (line) => {
+        r.bubble = line ? { text: (lines[line - 1] ?? '').trim().slice(0, 32), error: false } : null; // the robot "says" its line
+        if (i === this.focus) this.setProgram({ ...this.program, line, variables: runner.variables });
+      });
+      runner.events.on('error', (err) => {
+        r.bubble = { text: err.message.replace(/^\w+Error: /, '').slice(0, 40), error: true };
+        this.reportError(err, language, many ? r.name : undefined); new RobotCommands(this.sim, r).stop();
+      });
+      runner.events.on('state', (st) => { if (st === 'finished' || st === 'stopped') r.bubble = null; this.programStateChanged(language); });
+    }
     this.setProgram({ state: resumeFrom?.find(Boolean)?.state ?? 'running', language, line: null, errorLine: null });
     this.emitHud(true);
   }
@@ -616,6 +707,7 @@ export class Game {
     const state = states.includes('running') ? 'running' : states.includes('paused') ? 'paused' : states.includes('error') ? 'error' : states.every((s) => s === 'stopped') ? 'stopped' : 'finished';
     if (state === this.program.state) return;
     if (state === 'finished') this.out('system', `Program completed (${this.runners.reduce((s, r) => s + (r?.stepCount ?? 0), 0).toLocaleString('en')} steps).`);
+    if (state === 'finished' || state === 'stopped' || state === 'error') this.endRun();
     const stepping = this.runners.some((r) => r?.isStepping) || (state === 'paused' && this.program.state === 'running' && this.lastStep);
     if (state === 'paused' && !stepping) this.out('system', 'Paused. Robots finish their current action, then wait.');
     if (state === 'running' && this.program.state === 'paused' && !stepping) this.out('system', 'Resumed.');
@@ -628,9 +720,9 @@ export class Game {
   resumeProgram(): void { for (const r of this.runners) r?.resume(); }
 
   /** Run one line of the program (starting it paused first if needed), then pause: the debugger for beginners. */
-  stepProgram(language: LanguageId, source: string): void {
+  stepProgram(language: LanguageId, source: string, robot: number | null = null): void {
     if (!this.programActive) {
-      this.runProgram(language, source);
+      this.runProgram(language, source, robot);
       if (!this.programActive) return; // did not compile
       this.lastStep = true; // the start-paused is part of stepping: no "Paused" message
       for (const r of this.runners) r?.pause();
@@ -639,11 +731,49 @@ export class Game {
   }
 
   /** The robot functions as the command palette lists them, in definition order. */
-  commandReference(): { name: string; params: readonly string[]; doc: string; tier: number; example: string }[] {
+  commandReference(): { name: string; params: readonly string[]; doc: string; skill?: string; example: string }[] {
     const fns = createHostFunctions(this.commands, { action() {}, result() {} });
     const first = ['go_to', 'harvest', 'deposit', 'put', 'take']; // what beginners need, before the finer controls
     const rank = (n: string) => (first.includes(n) ? first.indexOf(n) : first.length);
-    return [...fns.values()].sort((a, b) => rank(a.name) - rank(b.name)).map((f) => ({ name: f.name, params: f.params, doc: f.doc, tier: f.tier ?? 0, example: f.example ?? `${f.name}()` }));
+    return [...fns.values()].sort((a, b) => rank(a.name) - rank(b.name)).map((f) => ({ name: f.name, params: f.params, doc: f.doc, skill: f.skill, example: f.example ?? `${f.name}()` }));
+  }
+
+  // ------------------------------------------------------------ developer cheats (only reachable after the dev login)
+
+  /** Sprite ids for the model gallery. */
+  spriteIds(): string[] { return this.renderer.spriteIds(); }
+
+  /** Run a cheat code; returns what happened, for the dev menu. */
+  cheat(input: string): string {
+    const [code, arg] = input.trim().toLowerCase().split(/\s+/);
+    const store = this.sim.storages[0]?.inventory, r = this.sim.research;
+    let msg: string;
+    switch (code) {
+      case 'sparks': r.sparks += Number(arg) || 100; msg = `Sparks: ${r.sparks}`; break;
+      case 'rich': for (const id of RESOURCE_IDS) store?.add(id, Number(arg) || 500); msg = 'Storage filled with every resource'; break;
+      case 'unlockall':
+        for (const n of RESEARCH) if (!r.isDone(n.id)) { r.completed.add(n.id); this.onResearch(n.id, n.name); }
+        msg = 'Every skill learned: all buildings, regions and Python unlocked'; break;
+      case 'builder':
+        for (const site of this.sim.entities.ofKind<ConstructionSite>('construction')) site.update(1e6);
+        msg = 'All construction finished'; break;
+      case 'speed': this.speed = Math.max(0.25, Math.min(20, Number(arg) || 1)); msg = `Game speed x${this.speed}`; break;
+      case 'land': {
+        const b = this.region.bounds;
+        for (let py = Math.floor(b.y0 / PARCEL); py < Math.ceil(b.y1 / PARCEL); py++) for (let px = Math.floor(b.x0 / PARCEL); px < Math.ceil(b.x1 / PARCEL); px++) this.sim.world.setParcelUnlocked(px, py, true);
+        this.renderer.drawParcels(); msg = 'All land in this region reclaimed'; break;
+      }
+      case 'fleet': {
+        r.completed.add('assembly'); store?.add('planks', 8); store?.add('scrap', 6);
+        this.assembleRobot(); msg = `Robots: ${this.sim.robots.length}`; break;
+      }
+      case 'skiptutorial': for (const s of this.tutorial.steps) this.tutorial.mark(s.id); this.tutorialProgress(); msg = 'Tutorial complete'; break;
+      case 'full': for (const robot of this.sim.robots) robot.inventory.add('scrap', robot.inventory.capacity - robot.inventory.total); msg = 'Every robot cargo hold is full'; break;
+      default: return `Unknown code "${code}". Try: sparks [n], rich [n], unlockall, builder, speed [x], land, fleet, skiptutorial, full`;
+    }
+    this.out('system', `[dev] ${msg}`);
+    this.emitHud(true);
+    return msg;
   }
 
   /** Ask the program editor to insert a snippet (from the inspector's "Program this" hints). */

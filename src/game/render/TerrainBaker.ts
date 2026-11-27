@@ -57,9 +57,26 @@ function surfaceAt(world: World, sx: number, sy: number) {
     const u = sx / TILE_W + yy / TILE_H, v = yy / TILE_H - sx / TILE_W;
     const i = Math.floor(u), j = Math.floor(v);
     const t = world.get(i, j);
-    if (t !== null && world.heightAt(i, j) === h) return { u, v, i, j, t, h };
+    if (t !== null && world.heightAt(i, j) === h && !roundedAway(world, i, j, h, u - i, v - j)) return { u, v, i, j, t, h };
   }
   return null;
+}
+
+/** Corner radius (in tiles) of outer cliff and coast corners. */
+const CORNER_R = 0.42;
+
+/**
+ * Outer coast corners are rounded off: where both edge neighbours and the diagonal are sea or lower water,
+ * the corner's tip belongs to the cliff below. This turns tile-stepped coasts and cliffs into soft, wavy edges.
+ */
+function roundedAway(world: World, i: number, j: number, h: number, fu: number, fv: number): boolean {
+  const a = fu > 0.5, b = fv > 0.5;
+  const du = a ? 1 - fu : fu, dv = b ? 1 - fv : fv; // distance to the corner's two edges
+  if (du >= CORNER_R || dv >= CORNER_R || Math.hypot(CORNER_R - du, CORNER_R - dv) <= CORNER_R) return false;
+  // only toward sea and water: there the cut tip shows water, which is right; between two land levels it would leave a hole
+  const lower = (x: number, y: number) => { const t = world.get(x, y); return t === null || (t === TileType.Water && world.heightAt(x, y) < h); };
+  const ni = i + (a ? 1 : -1), nj = j + (b ? 1 : -1);
+  return lower(ni, j) && lower(i, nj) && lower(ni, nj);
 }
 
 const SEA_MARGIN = 44;
@@ -254,10 +271,11 @@ function computeWaterDepth(world: World): Float32Array {
 
 /** Tile type at a point after organic border wobble. Concrete stays crisp and never spills. */
 function resolveType(world: World, u: number, v: number, t0: TileType): TileType {
-  const amp = t0 === TileType.Concrete ? 0.1 : 0.55;
+  if (t0 === TileType.Concrete) return t0; // paving is laid on the grid: its tiles stay whole squares
+  const amp = 0.55;
   const du = (vnoise(u * 2.3, v * 2.3, 11) - 0.5) * amp, dv = (vnoise(u * 2.3 + 40, v * 2.3 + 17, 12) - 0.5) * amp;
   const t = world.get(Math.floor(u + du), Math.floor(v + dv)) ?? t0;
-  return t === TileType.Concrete && t0 !== TileType.Concrete ? t0 : t;
+  return t === TileType.Concrete ? t0 : t; // and other ground never spills onto it
 }
 
 /** Type of the (wobbled) neighbour at an offset, for edge treatments. */
@@ -318,6 +336,12 @@ function mixedMask(world: World): Uint8Array {
 
 function topColor(ctx: Ctx, u: number, v: number, px: number, py: number, t0: TileType, phase: number): RGB {
   const { world, depthAt } = ctx;
+  if (t0 !== TileType.Concrete && t0 !== TileType.Water && t0 !== TileType.Sand) {
+    const ti = Math.floor(u), tj = Math.floor(v), fu = u - ti, fv = v - tj, W = 0.07;
+    const pav = (x: number, y: number) => world.get(x, y) === TileType.Concrete;
+    const near = (fu < W && pav(ti - 1, tj)) || (fv < W && pav(ti, tj - 1)) || (fu > 1 - W && pav(ti + 1, tj)) || (fv > 1 - W && pav(ti, tj + 1));
+    if (near) return pick(P.dirt, 1.3 + bayer(px, py) * 0.8); // trodden soil along the curb
+  }
   const mixed = ctx.mixed[Math.floor(v) * world.width + Math.floor(u)] === 1;
   const t = mixed ? resolveType(world, u, v, t0) : t0;
   const h = hash2(px, py, 1);
@@ -334,10 +358,10 @@ function topColor(ctx: Ctx, u: number, v: number, px: number, py: number, t0: Ti
       let fringe = false;
       if (mixed) for (const [a, c] of NB) if (isEarth(neighbour(world, u, v, a * 0.11, c * 0.11, t0))) { fringe = true; break; }
       if (fringe) base += 1.1;
-      let idx = Math.floor(base + b * 0.9);
+      let idx = Math.floor(base + b * 0.55); // soft dither: calm ground so the objects on it read
       // vertical grass-blade tufts
       const cx = px >> 2, cy = py >> 2;
-      if (hash2(cx, cy, 31) < (forest ? 0.1 : 0.17)) {
+      if (hash2(cx, cy, 31) < (forest ? 0.07 : 0.1)) {
         const ox = px & 3, oy = py & 3;
         if (ox === 1 && oy === 3) idx -= 1;
         else if (ox === 1 && oy === 2) idx += 1;
@@ -345,7 +369,7 @@ function topColor(ctx: Ctx, u: number, v: number, px: number, py: number, t0: Ti
         else if (ox === 2 && oy === 2) idx += 1;
         else if (ox === 0 && oy === 2 && hash2(cx, cy, 32) > 0.5) idx += 1;
       }
-      if (h > 0.972) idx -= 1;
+      if (h > 0.985) idx -= 1;
       let col: RGB;
       if (forest) col = pick(P.moss, idx);
       else col = mix(pick(P.grassCool, idx), pick(P.grassWarm, idx), sun);
@@ -353,8 +377,8 @@ function topColor(ctx: Ctx, u: number, v: number, px: number, py: number, t0: Ti
       if (forest && hash2(px >> 1, py >> 1, 24) < 0.01) return pick(P.maple, 2.5 + h * 3);
       if (!forest) {
         const meadow = fbm(u * 0.55 + 7, v * 0.55, 2, 40);
-        if (meadow > 0.56 && hash2(px * 5, py * 3, 22) < (meadow - 0.5) * 0.03) return pick(P.flowers, hash2(px, py, 23) * 5);
-        if (hash2(px, py, 25) < 0.003) return pick(P.stone, 3 + h * 2);
+        if (meadow > 0.56 && hash2(px * 5, py * 3, 22) < (meadow - 0.5) * 0.018) return pick(P.flowers, hash2(px, py, 23) * 5);
+        if (hash2(px, py, 25) < 0.0015) return pick(P.stone, 3 + h * 2);
       }
       return col;
     }
@@ -408,26 +432,25 @@ function topColor(ctx: Ctx, u: number, v: number, px: number, py: number, t0: Ti
       return col;
     }
     case TileType.Concrete: {
-      // cobbled yard: staggered rows of rounded stones laid on the tile grid, moss in the joints
-      const row = Math.floor(v * 4.5), off = (row % 2) * 0.5;
-      const cu = u * 4.5 + off, cell = Math.floor(cu);
-      const fu = cu - cell, fv = v * 4.5 - row;
-      const edge = Math.min(fu, 1 - fu, fv, 1 - fv);
-      const stone = hash2(cell, row, 61);
-      // raised yard lip: light on the far edges, shadow on the near ones
-      let lip = 0;
-      if (mixed && neighbour(world, u, v, -0.07, -0.07, t0) !== TileType.Concrete) lip = 1.6;
-      else if (mixed && neighbour(world, u, v, 0.05, 0.05, t0) !== TileType.Concrete) lip = -1.2;
-      if (edge < 0.1) {
-        const m = fbm(u * 2.6, v * 2.6, 2, 51);
-        return m > 0.5 && h < (m - 0.4) * 1.4 ? pick(P.moss, 2.2 + b * 2) : pick(P.concrete, 0.6 + lip * 0.5);
+      // paving: every tile is a whole square of 3 x 3 setts; a curb runs along edges that meet other ground
+      const ti = Math.floor(u), tj = Math.floor(v), fu = u - ti, fv = v - tj;
+      const paved = (x: number, y: number) => world.get(x, y) === TileType.Concrete;
+      const CURB = 0.085;
+      const curb = (fu < CURB && !paved(ti - 1, tj)) ? 'far' : (fv < CURB && !paved(ti, tj - 1)) ? 'far'
+        : (fu > 1 - CURB && !paved(ti + 1, tj)) ? 'near' : (fv > 1 - CURB && !paved(ti, tj + 1)) ? 'near' : null;
+      if (curb) return pick(P.stone, curb === 'far' ? 4.6 + b * 0.4 : 2.2 + b * 0.4); // lit far curb, shaded near curb
+      const su = fu * 3, sv = fv * 3, cu = Math.floor(su), cv = Math.floor(sv);
+      const gu = su - cu, gv = sv - cv, joint = Math.min(gu, 1 - gu, gv, 1 - gv);
+      if (joint < 0.07) {
+        const m = fbm(u * 2.6, v * 2.6, 2, 51); // moss creeps along a few joints
+        return m > 0.56 && h < (m - 0.45) * 1.2 ? pick(P.moss, 2.2 + b * 2) : pick(P.concrete, 0.7);
       }
-      // each stone is lit like a little dome: bright upper-left, darker lower-right
-      const dome = (0.5 - fu) * 0.9 + (0.5 - fv) * 0.9;
-      let idx = 2.7 + dome + (stone - 0.5) * 1.6 + lip + (b - 0.5) * 0.5;
-      if (edge < 0.17) idx -= 0.6;
+      const stone = hash2(ti * 3 + cu, tj * 3 + cv, 61);
+      const dome = (0.5 - gu) * 0.8 + (0.5 - gv) * 0.8; // each sett lit like a low dome from the upper left
+      let idx = 2.8 + dome + (stone - 0.5) * 1.2 + (b - 0.5) * 0.4;
+      if (joint < 0.14) idx -= 0.5;
       const col = pick(P.concrete, idx);
-      return stone > 0.9 ? mix(col, pick(P.brick, 3), 0.35) : stone < 0.07 ? mix(col, pick(P.cream, 3), 0.4) : col;
+      return stone > 0.92 ? mix(col, pick(P.brick, 3), 0.3) : stone < 0.06 ? mix(col, pick(P.cream, 3), 0.35) : col;
     }
   }
 }

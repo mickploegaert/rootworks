@@ -3,10 +3,11 @@ import type { ConsoleEntry, Game, ProgramStatus } from '../../game/Game.ts';
 import type { ProgramStore } from '../../game/save/ProgramStore.ts';
 import { LANGUAGES, LANGUAGE_IDS } from '../../game/scripting/adapters.ts';
 import { CONCEPTS, PYTHON_EXAMPLES, STARTER_CODE } from '../../game/scripting/templates.ts';
-import { FIRMWARE_NAMES } from '../../game/scripting/hostApi.ts';
+import { researchById } from '../../game/research/ResearchDefs.ts';
 import type { LanguageId } from '../../game/scripting/types.ts';
 import type { TutorialStep } from '../../game/tutorial/Tutorial.ts';
 import { CodeEditor, type EditorApi } from './CodeEditor.tsx';
+import { LOGIN_EVENT } from '../DevMenu.tsx';
 
 const CONSOLE_LIMIT = 300;
 const SAVE_DELAY = 300;
@@ -21,13 +22,19 @@ interface Props {
   tutorial: TutorialStep[];
   /** Show the tutorial checklist (a setting; always on in a tutorial game). */
   showTutorial: boolean;
-  firmware: number;
+  /** Skills learned (ids). */
+  skills: readonly string[];
+  /** Robot names: with more than one, the player picks which robot a Run starts. */
+  robots: readonly string[];
   open: boolean;
   onToggle(): void;
 }
 
 /** The programming workspace: language, editor, run controls, tutorial and console. UI only; the game runs the code. */
-export function CodePanel({ game, store, tutorial, showTutorial, firmware, open, onToggle }: Props) {
+export function CodePanel({ game, store, tutorial, showTutorial, skills, robots, open, onToggle }: Props) {
+  const [target, setTarget] = useState<number | null>(null);
+  const learned = new Set(skills);
+  const [completions] = useState(() => game.commandReference().map((c) => ({ label: c.name, detail: `(${c.params.join(', ')})`, info: c.doc })));
   const [guided, setGuidedState] = useState(store.guided);
   useEffect(() => { game.setGuided(guided); }, [game, guided]);
   const setGuided = (on: boolean) => { store.setGuided(on); setGuidedState(on); };
@@ -91,10 +98,10 @@ export function CodePanel({ game, store, tutorial, showTutorial, firmware, open,
   };
 
   const active = status.state === 'running' || status.state === 'paused';
-  const run = () => { flush.current(); game.runProgram(language, code); };
-  const step = () => { flush.current(); game.stepProgram(language, code); };
+  const run = () => { flush.current(); game.runProgram(language, code, target); };
+  const step = () => { flush.current(); game.stepProgram(language, code, target); };
   const tutorialDone = tutorial.every((s) => s.done);
-  const examples = PYTHON_EXAMPLES.filter((e) => !guided || e.tier <= firmware);
+  const examples = PYTHON_EXAMPLES.filter((e) => !guided || e.skills.every((k) => learned.has(k)));
   const lockedExamples = PYTHON_EXAMPLES.length - examples.length;
 
   if (!open) {
@@ -108,7 +115,7 @@ export function CodePanel({ game, store, tutorial, showTutorial, firmware, open,
         <span className={`run-state rs-${status.state}`} role="status">
           {STATUS_LABEL[status.state]}{status.state === 'running' && status.line ? ` · line ${status.line}` : ''}
         </span>
-        <button type="button" className="icon" onClick={onToggle} aria-label="Hide the program editor">{'>>'}</button>
+        <button type="button" className="icon" onClick={onToggle} aria-label="Hide the program editor" title="Hide (P)">Hide</button>
       </header>
 
       <div className="code-bar">
@@ -129,27 +136,36 @@ export function CodePanel({ game, store, tutorial, showTutorial, firmware, open,
             }}>
               <option value="">Load...</option>
               {examples.map((e) => <option key={e.id} value={e.id}>{e.title}</option>)}
-              {lockedExamples > 0 && <option disabled>{lockedExamples} more with new firmware</option>}
+              {lockedExamples > 0 && <option disabled>{lockedExamples} more with new skills</option>}
             </select>
           </label>
         )}
         {language === 'python' && (
-          <label title="Guided: Python features unlock with firmware research, one idea at a time. Engineer: all of Python, right away.">
+          <label title="Guided: Python features unlock as you buy skills, one idea at a time. Engineer: all of Python, right away.">
             <span className="label">Mode</span>
             <select value={guided ? 'guided' : 'engineer'} disabled={active} onChange={(e) => setGuided(e.target.value === 'guided')}>
-              <option value="guided">Guided · T{firmware} {FIRMWARE_NAMES[firmware] ?? ''}</option>
+              <option value="guided">Guided ({skills.filter((k) => researchById(k)?.code).length})</option>
               <option value="engineer">Engineer (all Python)</option>
             </select>
           </label>
         )}
       </div>
 
+      {robots.length > 1 && (
+        <label className="run-on" title="Each robot can run its own program: Run replaces only the chosen robot's program.">
+          <span className="label">Run on</span>
+          <select value={target ?? 'all'} onChange={(e) => setTarget(e.target.value === 'all' ? null : Number(e.target.value))}>
+            <option value="all">All robots</option>
+            {robots.map((n, i) => <option key={i} value={i}>{n}</option>)}
+          </select>
+        </label>
+      )}
       {language === 'python' && (
         <button type="button" className={`palette-toggle ${palette ? 'on' : ''}`} onClick={() => setPalette(!palette)} aria-expanded={palette}>
           {palette ? 'Hide commands' : 'Commands & help'}
         </button>
       )}
-      {palette && language === 'python' && <Palette game={game} firmware={guided ? firmware : 99} onInsert={(c) => insert.current(c)} />}
+      {palette && language === 'python' && <Palette game={game} store={store} code={code} selection={() => editor.current?.selection() ?? ''} learned={guided ? learned : null} onInsert={(c) => insert.current(c)} />}
 
       {!LANGUAGES[language].available && (
         <p className="code-note">{LANGUAGES[language].name} is still being built, so this program can't run yet. Your code here is saved separately. Switch to Python to run programs.</p>
@@ -161,9 +177,15 @@ export function CodePanel({ game, store, tutorial, showTutorial, firmware, open,
 
       <div className="code-body">
         <CodeEditor language={language} value={code} onChange={edit} onRun={() => !active && run()} readOnly={active}
-          activeLine={active ? status.line : null} errorLine={status.state === 'error' ? status.errorLine : null} apiRef={editor} />
+          activeLine={active ? status.line : null} errorLine={status.state === 'error' ? status.errorLine : null} apiRef={editor} completions={completions} />
       </div>
 
+      {(status.state === 'paused' || status.state === 'running') && (status.variables?.length ?? 0) > 0 && (
+        <div className="vars" aria-label="Variables">
+          <span className="label">Variables</span>
+          {status.variables!.map(([k, v]) => <span key={k} className="var"><b>{k}</b> = <code>{v}</code></span>)}
+        </div>
+      )}
       <div className="code-actions">
         <button type="button" className="primary" onClick={run} disabled={active} title="Run (Ctrl+Enter)">Run</button>
         {status.state === 'paused'
@@ -232,27 +254,49 @@ function Lesson({ steps, onInsert }: { steps: TutorialStep[]; onInsert(code: str
 }
 
 /** Every command and Python idea, with what it does and a ready example. Locked ones say what unlocks them. */
-function Palette({ game, firmware, onInsert }: { game: Game; firmware: number; onInsert(code: string): void }) {
+function Palette({ game, store, code, selection, learned, onInsert }: { game: Game; store: ProgramStore; code: string; selection(): string; learned: ReadonlySet<string> | null; onInsert(code: string): void }) {
+  const [library, setLibrary] = useState(store.library);
   const [commands] = useState(() => game.commandReference());
   const [q, setQ] = useState('');
   const match = (t: string) => t.toLowerCase().includes(q.trim().toLowerCase());
-  const row = (key: string, code: string, doc: string, tier: number) => {
-    const locked = tier > firmware;
+  const row = (key: string, code: string, doc: string, skill?: string) => {
+    const locked = !!skill && !!learned && !learned.has(skill);
     return (
       <li key={key} className={locked ? 'locked' : ''}>
         <code>{code.split('\n')[0]}{code.includes('\n') ? ' ...' : ''}</code>
-        <span className="doc">{doc}{locked && <em> Unlocks with {FIRMWARE_NAMES[tier]} firmware (T{tier}).</em>}</span>
+        <span className="doc">{doc}{locked && <em> Needs the {researchById(skill!)?.name} skill (Skills tab).</em>}</span>
         <button type="button" className="icon" disabled={locked} onClick={() => onInsert(code)}>Insert</button>
       </li>
     );
   };
   return (
     <div className="palette">
-      <input type="search" placeholder="Search commands..." value={q} onChange={(e) => setQ(e.target.value)} aria-label="Search commands" />
+      <input type="search" placeholder="Search commands..." value={q} aria-label="Search commands"
+        onChange={(e) => { setQ(e.target.value); if (e.target.value.trim().toLowerCase() === 'login') { setQ(''); window.dispatchEvent(new Event(LOGIN_EVENT)); } }} />
+      <span className="label">My library</span>
+      <ul>
+        {library.filter((s) => match(s.name + s.code)).map((s) => (
+          <li key={s.name}>
+            <code>{s.name}</code>
+            <span className="doc">{s.code.split('\n')[0].slice(0, 60)}</span>
+            <span className="lib-buttons">
+              <button type="button" className="icon" onClick={() => onInsert(s.code)}>Insert</button>
+              <button type="button" className="icon" onClick={() => { store.removeSnippet(s.name); setLibrary(store.library); }} aria-label={`Delete ${s.name}`}>×</button>
+            </span>
+          </li>
+        ))}
+        {library.length === 0 && <li className="locked"><span className="doc">Save code you want to reuse: select lines in the editor (or nothing for the whole program) and press Save.</span></li>}
+      </ul>
+      <button type="button" className="icon lib-save" onClick={() => {
+        const name = window.prompt('Name for this snippet (for example: make_kit)')?.trim();
+        if (!name) return;
+        store.saveSnippet(name, selection() || code);
+        setLibrary(store.library);
+      }}>Save selection to library</button>
       <span className="label">Robot commands</span>
-      <ul>{commands.filter((c) => match(c.name + c.doc)).map((c) => row(c.name, c.example, c.doc, c.tier))}</ul>
+      <ul>{commands.filter((c) => match(c.name + c.doc)).map((c) => row(c.name, c.example, c.doc, c.skill))}</ul>
       <span className="label">Python</span>
-      <ul>{CONCEPTS.filter((c) => match(c.title + c.doc)).map((c) => row(c.title, c.code, c.doc, c.tier))}</ul>
+      <ul>{CONCEPTS.filter((c) => match(c.title + c.doc)).map((c) => row(c.title, c.code, c.doc, c.skill))}</ul>
     </div>
   );
 }

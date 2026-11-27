@@ -2,74 +2,68 @@ import { Emitter } from '../core/Emitter.ts';
 import type { Machine } from '../entities/Machine.ts';
 import { RESEARCH, researchById, type Firmware, type ResearchNode } from './ResearchDefs.ts';
 
+/** Seconds a Lab needs to turn one Research Kit into Sparks. */
+export const KIT_SECONDS = 4;
+export const SPARKS_PER_KIT = 2;
+
 /**
- * Research progress. The player picks a node; any Lab with research kits in its input consumes them,
- * one kit at a time, until the node is complete. Labs work in parallel on the same node.
+ * Skills and the one currency that buys them. Sparks come from lessons, commissions and Labs (which turn
+ * Research Kits into Sparks); the player spends them in the skill tree and the skill applies at once.
  */
 export class ResearchSystem {
-  readonly events = new Emitter<{ completed: ResearchNode; autoPicked: ResearchNode }>();
+  readonly events = new Emitter<{ completed: ResearchNode; sparked: number }>();
   readonly completed = new Set<string>();
-  current: string | null = null;
-  /** Kits consumed toward `current`. */
-  kitsDone = 0;
-  /** Seconds into the kit each lab is processing. */
+  sparks = 0;
+  /** Seconds into the kit each lab is processing (-1: idle). */
   private readonly labTimers = new Map<Machine, number>();
 
   isDone(id: string): boolean { return this.completed.has(id); }
 
   available(n: ResearchNode): boolean { return !this.completed.has(n.id) && n.requires.every((r) => this.completed.has(r)); }
 
-  /** Highest robot firmware tier installed. */
+  /** Programming skills learned (0..3+): the robots' firmware level, shown as the sprout on Seedling's head. */
   get firmware(): Firmware {
-    let t: Firmware = 0;
-    for (const id of this.completed) { const f = researchById(id)?.firmware; if (f !== undefined && f > t) t = f; }
-    return t;
+    return Math.min(3, RESEARCH.filter((n) => n.code && this.completed.has(n.id)).length) as Firmware;
   }
 
-  /** Choose what to research. Returns why it can't be chosen, or null. */
-  select(id: string | null): string | null {
-    if (id === null) { this.current = null; return null; }
+  /** Why a skill can't be bought right now, or null. */
+  problem(id: string): string | null {
     const n = researchById(id);
-    if (!n) return 'Unknown research';
-    if (this.completed.has(id)) return 'Already researched';
+    if (!n) return 'Unknown skill';
+    if (this.completed.has(id)) return 'Already learned';
     if (!this.available(n)) return `Needs ${n.requires.filter((r) => !this.completed.has(r)).map((r) => researchById(r)?.name ?? r).join(', ')} first`;
-    if (this.current !== id) { this.current = id; this.kitsDone = 0; }
+    if (this.sparks < n.cost) return `Needs ${n.cost - this.sparks} more Sparks`;
     return null;
   }
 
-  /** Called by the simulation each tick with all labs. */
+  /** Spend Sparks on a skill. Returns why not, or null when learned. */
+  buy(id: string): string | null {
+    const p = this.problem(id);
+    if (p) return p;
+    const n = researchById(id)!;
+    this.sparks -= n.cost;
+    this.completed.add(id);
+    this.events.emit('completed', n);
+    return null;
+  }
+
+  /** Each tick: every Lab with kits turns them into Sparks, one kit at a time. */
   update(dt: number, labs: Machine[]): void {
-    // kits waiting in a Lab with no project picked: start the first open one rather than let them sit unexplained
-    if (!this.current && labs.some((l) => l.input.get('research_kit') > 0)) {
-      const first = RESEARCH.find((r) => this.available(r));
-      if (first) { this.select(first.id); this.events.emit('autoPicked', first); }
-    }
-    const n = this.current ? researchById(this.current) : null;
-    if (!n) return;
     for (const lab of labs) {
-      if (this.kitsDone >= n.kits) break;
       let t = this.labTimers.get(lab) ?? -1;
       if (t < 0) {
-        if (lab.input.remove('research_kit', 1) === 0) continue;
+        if (lab.input.remove('research_kit', 1) === 0) { lab.progress = 0; continue; }
         t = 0;
       }
       t += dt;
-      if (t >= n.secondsPerKit) { this.kitsDone++; t = -1; }
+      if (t >= KIT_SECONDS) {
+        t = -1;
+        this.sparks += SPARKS_PER_KIT;
+        this.events.emit('sparked', SPARKS_PER_KIT);
+      }
       this.labTimers.set(lab, t);
-      lab.progress = t; // shown as the lab's activity
+      lab.progress = Math.max(0, t); // shown as the lab's activity
     }
-    if (this.kitsDone >= n.kits) {
-      this.completed.add(n.id);
-      this.current = null;
-      this.kitsDone = 0;
-      this.events.emit('completed', n);
-    }
-  }
-
-  /** Progress of the current node, 0..1. */
-  get progress(): number {
-    const n = this.current ? researchById(this.current) : null;
-    return n ? this.kitsDone / n.kits : 0;
   }
 
   static get nodes(): readonly ResearchNode[] { return RESEARCH; }

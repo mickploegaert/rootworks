@@ -82,6 +82,6 @@ export function regionSeed(worldSeed: number, id: RegionId): number {
 /** Why the player cannot enter a region yet, or null. */
 export function regionLock(def: RegionDef, researched: ReadonlySet<string>): string | null {
   if (def.future || !def.generate) return 'Not charted yet: this region arrives in a later update';
-  if (def.requires && !researched.has(def.requires)) return `Research ${researchById(def.requires)?.name ?? def.requires} to travel here`;
+  if (def.requires && !researched.has(def.requires)) return `Learn the ${researchById(def.requires)?.name ?? def.requires} skill to travel here`;
   return null;
 }

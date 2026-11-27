@@ -34,7 +34,7 @@ let file = save(vale, {}, program);
 assert.deepEqual(Object.keys(file.regions), ['vale'], 'a save holds only visited regions');
 
 // ---------------------------------------------------------------- locks
-assert.match(travelSave(file, 'quarry', vale.research.completed) as string, /Research Surveying/);
+assert.match(travelSave(file, 'quarry', vale.research.completed) as string, /Learn the Surveying skill/);
 assert.match(travelSave(file, 'saltmarsh', vale.research.completed) as string, /later update/, 'future regions are on the map only');
 assert.equal(travelSave(file, 'vale', vale.research.completed), 'You are already here');
 for (const r of REGIONS) if (r.future) assert.equal(r.generate, undefined, `${r.id} has no generator: it can never be loaded`);
@@ -99,6 +99,6 @@ assert.ok(JSON.stringify(file).length < 200_000, `save size ${JSON.stringify(fil
 
 // determinism: the same region seed gives the same region
 assert.equal(loadActiveRegion({ ...file, region: 'quarry', regions: {} }, SEED).entities.count, loadActiveRegion({ ...file, region: 'quarry', regions: {} }, SEED).entities.count);
-assert.equal(regionLock(REGIONS.find((r) => r.id === 'whisperwood')!, new Set()), 'Research Gardening to travel here');
+assert.equal(regionLock(REGIONS.find((r) => r.id === 'whisperwood')!, new Set()), 'Learn the Gardening skill to travel here');
 
 console.log('regions ok', JSON.stringify(gens()), `valley ${vale.entities.count}, quarry ${quarry.entities.count}, whisperwood ${wood.entities.count} entities`);

@@ -59,7 +59,9 @@ function tiles(f: RoofFace, ramp: readonly RGB[], seed: number): RGB {
   if ((f.up * 9) % 1 < 0.22) idx -= 1.3; // course shadow line
   if ((f.s + off) % 6 < 0.8) idx -= 0.6;
   if (f.up > 0.94) return pick(ramp, idx + 1); // ridge cap
-  if (f.up < 0.35 && vnoise(f.x * 0.25, f.y * 0.25, seed) > 0.62) return pick(P.moss, 2.2 + hash2(f.x, f.y, 1) * 2);
+  // moss grows tile by tile in a few clumps along the eaves: whole tiles, lighter where the sun reaches, edges kept
+  const cell = Math.floor((f.s + off) / 6), u = (f.s + off) % 6, v = (f.up * 9) % 1;
+  if (course < 2 && u > 0.8 && v > 0.22 && vnoise(cell * 0.45, course * 0.9, seed + 3) > 0.74) return pick(P.moss, 2 + v * 2.4 + (f.kind === 'back' ? 0.8 : 0));
   return pick(ramp, idx);
 }
 
@@ -197,7 +199,9 @@ export function factory(): Built {
       return pick(P.brick, 2.2 + hash2(Math.floor((f.s + off) / 7), row, 7) * 1.4);
     }
     const seam = f.s % 8 < 1;
-    const patina = vnoise(f.s * 0.08, f.up * 3, 4) > 0.55 && !seam;
+    // verdigris runs down from a few seams: thin streaks, never blobs
+    const panel = Math.floor(f.s / 8), inPanel = f.s % 8;
+    const patina = inPanel > 1 && inPanel < 2.6 && hash2(panel, 1, 4) < 0.4 && f.up < 0.35 + hash2(panel, 2, 4) * 0.5;
     const lit = f.kind === 'back' ? 3.4 : 2.2;
     return patina ? pick(P.verdigris, lit - 0.3) : pick(P.copper, lit + (seam ? -1 : 0) - (f.up > 0.95 ? -1 : 0));
   });
@@ -305,7 +309,8 @@ export function turbine(): Built {
         let col = pick(P.cream, 3.6 - nx * 1.8 + (vnoise(x * 0.2, y * 0.2, 4) - 0.5) * 0.6);
         if (Math.abs(nx + 0.1) < 0.16 && y > oy - 16 && y < oy + 2) col = pick(P.wood, 1.6 + (y % 4 < 1 ? -0.6 : 0)); // door
         if (Math.abs(nx) < 0.14 && y > oy - 50 && y < oy - 42) col = pick(P.amber, 4); // lit window
-        if (f < 0.25 && hash2(x, y, 3) < (0.25 - f) * 2.4 && nx < 0.3) col = pick(P.leaf, 2 + (nx < 0 ? 1.4 : 0));
+        const ivy = Math.floor(x / 3); // ivy in a few tidy columns climbing from the ground
+        if (nx < 0.35 && hash2(ivy, 0, 3) < 0.4 && oy - y < 6 + hash2(ivy, 1, 5) * 16 && hash2(x, y, 3) > 0.18) col = pick(P.leaf, 2 + (nx < 0 ? 1.4 : 0) + hash2(x, y, 4));
         pc.set(x, y, col);
       }
     }
@@ -325,10 +330,11 @@ export function turbine(): Built {
       for (let i = 2; i <= 42; i++) {
         const x = hx + ca * i, y = hy + sa * i * 0.85;
         pc.set(x, y, pick(P.wood, 1.4)); // stock
-        if (i > 10) for (let w = 1; w <= 7; w++) {
+        if (i > 10) for (let w = 1; w <= 8; w++) {
           const px = x - sa * w, py = y + ca * w * 0.85;
-          const frameLine = w === 7 || i % 6 === 0;
-          pc.set(px, py, frameLine ? pick(P.wood, 2.2) : pick(P.cream, 4 - w * 0.12));
+          const lath = w === 8 || w === 4 || i % 4 === 0 || i === 42;
+          if (lath) pc.set(px, py, pick(P.wood, 2.4));
+          else if (w < 4) pc.set(px, py, pick(P.cream, 4.2 - (i % 4) * 0.25)); // sailcloth on the inner half
         }
       }
     }
@@ -650,28 +656,50 @@ const brickFace = (f: Face, base: number, seed: number): RGB => {
   return pick(P.brick, base + hash2(Math.floor((f.s + off) / 7), row, seed) * 1.3);
 };
 
-/** Workbench: a timber lean-to with a heavy table, vice and tools in front. */
+/**
+ * Workbench: a tool wall under a small roof at the back, and a heavy open-air bench in front of it with a vice,
+ * hand tools and a research kit in progress. The bench stands clear of the roof, so nothing pokes through it.
+ */
 export function workbench(): Built {
   const b = start(2, 2, 44, 10, 4), { pc, ox, oy } = b;
-  shadowSweep(b.shadow!, footprint(ox, oy, -0.5, -0.5, 1.5, 1.5), 26, 75);
-  drawBox(pc, ox, oy, { a0: -0.45, b0: -0.45, a1: 1.45, b1: 1.45, z1: 3 }, (f) => pick(P.wood, BIAS[f.kind] + (f.kind === 'top' && f.s % 8 < 1 ? -0.9 : 0.3)));
-  drawBox(pc, ox, oy, { a0: -0.45, b0: -0.45, a1: 1.45, b1: -0.25, z0: 3, z1: 26 }, (f) => {
-    if (f.kind === 'L' && f.t > 10 && f.t < 20 && f.s % 9 < 2) return pick(P.steel, 3 + (f.t > 17 ? 1 : 0)); // hanging tools
+  shadowSweep(b.shadow!, footprint(ox, oy, -0.5, -0.5, 1.5, 0.4), 30, 75);
+  // plank floor
+  drawBox(pc, ox, oy, { a0: -0.45, b0: -0.45, a1: 1.45, b1: 1.45, z1: 3 }, (f) => pick(P.wood, BIAS[f.kind] - 0.1 + (f.kind === 'top' && f.s % 8 < 1 ? -0.9 : 0)));
+  // back wall with a pegboard of tools
+  drawBox(pc, ox, oy, { a0: -0.45, b0: -0.45, a1: 1.45, b1: -0.3, z0: 3, z1: 30 }, (f) => {
+    if (f.kind === 'L' && f.t > 3 && f.t < 16 && f.s > 4 && f.s < f.sw - 4) {
+      const tool = f.s % 10;
+      if (tool < 2 && f.t > 5) return pick(P.steel, 3 + (f.t > 13 ? 1.4 : 0)); // spanners and saws
+      if (tool > 5 && tool < 7 && f.t > 8) return pick(P.copper, 3.6);
+      return pick(P.wood, 3.2 + ((f.s + f.t) % 4 === 0 ? -0.6 : 0)); // pegboard
+    }
     return pick(P.wood, BIAS[f.kind] + (f.s % 5 < 1 ? -0.8 : 0) + (vnoise(f.x * 0.4, f.y * 0.1, 3) - 0.5) * 0.5);
   });
-  for (const a of [-0.4, 1.4]) drawBox(pc, ox, oy, { a0: a - 0.05, b0: 0.9, a1: a + 0.05, b1: 1.0, z0: 3, z1: 24 }, (f) => pick(P.wood, BIAS[f.kind]));
-  drawGable(pc, ox, oy, { a0: -0.5, b0: -0.5, a1: 1.5, b1: 1.0, z1: 24, ridge: 10, axis: 'u', overhang: 0.1 }, (f) => (f.kind === 'gable' ? pick(P.wood, 2) : tiles(f, P.slate, 31)));
-  drawBox(pc, ox, oy, { a0: 0.0, b0: 0.2, a1: 1.1, b1: 0.75, z0: 3, z1: 13 }, (f) => {
-    if (f.kind === 'top') return pick(P.wood, 4.2 + (f.s % 7 < 1 ? -0.8 : 0));
-    return f.t > 8 ? pick(P.wood, BIAS[f.kind] + 0.6) : f.s % 14 < 2 ? pick(P.wood, BIAS[f.kind]) : null; // legs
+  // two posts and the roof: it covers the wall half only
+  for (const a of [-0.4, 1.4]) drawBox(pc, ox, oy, { a0: a - 0.05, b0: 0.25, a1: a + 0.05, b1: 0.35, z0: 3, z1: 27 }, (f) => pick(P.wood, BIAS[f.kind]));
+  drawGable(pc, ox, oy, { a0: -0.5, b0: -0.5, a1: 1.5, b1: 0.4, z1: 27, ridge: 8, axis: 'u', overhang: 0.06 }, (f) => (f.kind === 'gable' ? pick(P.wood, 2) : tiles(f, P.slate, 31)));
+  // the bench, in the open in front
+  drawBox(pc, ox, oy, { a0: 0.05, b0: 0.6, a1: 1.2, b1: 1.1, z0: 3, z1: 15 }, (f) => {
+    if (f.kind === 'top') return pick(P.wood, 4.6 + (f.s % 7 < 1 ? -0.8 : 0));
+    if (f.t > 11) return pick(P.wood, BIAS[f.kind] + 1); // thick top
+    if (f.t > 4 && f.t < 5.5) return pick(P.wood, BIAS[f.kind] - 0.3); // stretcher rail
+    return f.s % 15 < 2.5 || f.s > f.sw - 2.5 ? pick(P.wood, BIAS[f.kind]) : null; // legs
   });
-  const [vx, vy] = isoPt(ox, oy, 0.15, 0.45, 13);
+  const [vx, vy] = isoPt(ox, oy, 0.2, 0.85, 15);
   rect(pc, vx - 3, vy - 5, 6, 5, (x) => pick(P.steel, x < vx ? 3.4 : 2)); // vice
-  const [kx, ky] = isoPt(ox, oy, 0.8, 0.45, 13);
-  rect(pc, kx - 4, ky - 4, 8, 4, (x) => pick(P.teal, x < kx ? 4 : 3)); // a research kit in progress
-  line(pc, kx - 4, ky - 2, kx + 3, ky - 2, pick(P.cream, 4));
+  line(pc, vx - 4, vy - 3, vx - 6, vy - 2, pick(P.steel, 4));
+  const [kx, ky] = isoPt(ox, oy, 0.9, 0.85, 15);
+  rect(pc, kx - 4, ky - 4, 8, 4, (x) => pick(P.wood, x < kx ? 4 : 3)); // a research kit in progress
+  rect(pc, kx - 1, ky - 7, 2, 3, () => pick(P.teal, 4));
+  const [hx, hy] = isoPt(ox, oy, 0.55, 0.75, 15);
+  line(pc, hx - 3, hy - 1, hx + 2, hy - 2, pick(P.wood, 2)); pc.set(hx + 3, hy - 2, pick(P.steel, 4)); pc.set(hx + 3, hy - 3, pick(P.steel, 3)); // hammer
+  for (let k = 0; k < 2; k++) { // two logs and a little crate of scrap: the inputs, at a glance
+    const [lx, ly] = isoPt(ox, oy, 1.32, 0.75 + k * 0.2, 3);
+    drawCylinder(pc, lx, ly, 3, 2, (nx, _t, cap) => (cap ? pick(P.sand, 3.5) : pick(P.bark, 2.6 - nx)));
+  }
+  drawBox(pc, ox, oy, { a0: -0.4, b0: 0.75, a1: -0.1, b1: 1.05, z0: 3, z1: 9 }, (f) => (f.kind === 'top' ? pick(P.steel, 3 + ((f.s + f.t) % 3 === 0 ? 1.4 : 0)) : pick(P.wood, BIAS[f.kind] + (f.t % 3 < 1 ? -0.7 : 0))));
   pc.edgeDarken(0.62);
-  b.fx = { glows: [{ ...at(ox, oy, 0.5, 0.5, 20), color: WARM, radius: 22, flicker: 0.1, alpha: 0.35 }] };
+  b.fx = { glows: [{ ...at(ox, oy, 0.5, 0.85, 18), color: WARM, radius: 22, flicker: 0.1, alpha: 0.35 }] };
   return b;
 }
 
@@ -687,14 +715,26 @@ export function labBuilding(): Built {
     if (f.kind === 'L' && f.s > 26 && f.s < 38 && f.t < 18) return f.s < 28 || f.s > 36 || f.t > 16 ? pick(P.cream, 3) : pick(P.teal, 2.4 + (f.t % 4 < 1 ? -0.6 : 0)); // door
     return climber(f, 51, 0.22, 14) ?? brickFace(f, BIAS[f.kind] - 0.1, 9);
   });
+  // observatory: a brick drum standing on the roof, a ribbed copper dome resting on it, a dark slot with the telescope
   const [dx, dy] = isoPt(ox, oy, 0.5, 0.5, H);
-  blob(pc, dx, dy - 8, 18, 15, P.copper, { style: 'smooth', paint: (x, y, lit) => ((x + y) % 9 === 0 ? pick(P.verdigris, 2 + lit * 2) : null) });
-  // a brass telescope poking out of the dome's slot
-  for (let i = 0; i <= 14; i++) {
-    const x = dx - 3 + i * 0.9, y = dy - 9 - i, w = i > 11 ? 2 : 1;
-    for (let k = -w; k <= w; k++) pc.set(x + k, y, k < 0 ? pick(P.steel, 4.4) : k === 0 ? pick(P.steel, 3) : pick(P.steel, 1.4));
+  const R = 20, DH = 8, DOME = 19;
+  drawCylinder(pc, dx, dy, R, DH, (nx, t, cap, x, y) => (cap ? pick(P.copper, 3) : t > DH - 2 ? pick(P.cream, 3.6 - nx) : brickFace({ s: x, t: y, kind: nx < 0 ? 'L' : 'R' } as Face, 2.6 - nx * 1.2, 21)));
+  const top = dy - DH;
+  for (let y = top - DOME; y <= top; y++) for (let x = dx - R; x <= dx + R; x++) {
+    const ex = (x + 0.5 - dx) / R, ey = (y + 0.5 - top) / DOME;
+    if (ex * ex + ey * ey > 1) continue;
+    const lit = -ex * 0.9 - ey * 0.6;
+    const slot = Math.abs(ex - 0.12) < 0.13 && ey < -0.05; // the opening, toward the light
+    if (slot) { pc.set(x, y, pick(P.slate, 0.4 + (ey < -0.8 ? 0.6 : 0))); continue; }
+    const rib = Math.abs(((Math.asin(Math.max(-1, Math.min(1, ex / Math.sqrt(Math.max(0.01, 1 - ey * ey))))) / Math.PI) * 8) % 1) < 0.12;
+    pc.set(x, y, rib ? pick(P.verdigris, 2.2 + lit * 1.6) : pick(P.copper, 3.4 + lit * 2 + (ex * ex + ey * ey > 0.85 ? -0.6 : 0)));
   }
-  pc.set(dx + 10, dy - 23, pick(P.glass, 5)); pc.set(dx + 11, dy - 23, pick(P.glass, 4));
+  // a brass telescope poking out of the slot
+  for (let i = 0; i <= 10; i++) {
+    const x = dx + 2 + i * 0.8, y = top - 5 - i, w = i > 8 ? 2 : 1;
+    for (let k = -w; k <= w; k++) pc.set(x + k, y, k < 0 ? pick(P.amber, 4.4) : k === 0 ? pick(P.amber, 3) : pick(P.copper, 1.6));
+  }
+  pc.set(dx + 10, top - 16, pick(P.glass, 5));
   pc.edgeDarken(0.62);
   b.fx = { glows: [{ ...at(ox, oy, 0.5, 1.5, 16), color: 0xbfe6c8, radius: 26, flicker: 0.08, alpha: 0.35 }, { ...at(ox, oy, 1.5, 0.5, 16), color: WARM, radius: 20, flicker: 0.08, alpha: 0.3 }] };
   return b;
@@ -706,9 +746,11 @@ export function sawmill(): Built {
   const make = (frame: number): Built => {
     const b = start(2, 2, 46, 12, 4), { pc, ox, oy } = b;
     shadowSweep(b.shadow!, footprint(ox, oy, -0.5, -0.5, 1.5, 1.5), 30, 75);
-    for (const [a, bb] of [[-0.4, -0.4], [1.4, -0.4], [-0.4, 1.4], [1.4, 1.4]]) drawBox(pc, ox, oy, { a0: a - 0.06, b0: bb - 0.06, a1: a + 0.06, b1: bb + 0.06, z1: 26 }, (f) => pick(P.wood, BIAS[f.kind]));
+    // open-fronted shed: the roof covers the back half, the saw bench stands in front of it, so nothing pokes through
+    for (const [a, bb] of [[-0.4, -0.4], [1.4, -0.4], [-0.4, 0.3], [1.4, 0.3]]) drawBox(pc, ox, oy, { a0: a - 0.06, b0: bb - 0.06, a1: a + 0.06, b1: bb + 0.06, z1: 26 }, (f) => pick(P.wood, BIAS[f.kind]));
     drawBox(pc, ox, oy, { a0: -0.45, b0: -0.45, a1: 1.45, b1: -0.3, z1: 26 }, (f) => pick(P.wood, BIAS[f.kind] + (f.s % 4 < 1 ? -0.8 : 0)));
-    drawGable(pc, ox, oy, { a0: -0.5, b0: -0.5, a1: 1.5, b1: 1.5, z1: 26, ridge: 16, axis: 'u', overhang: 0.08 }, (f) => (f.kind === 'gable' ? pick(P.wood, 2.2 + (f.s % 4 < 1 ? -0.7 : 0)) : tiles(f, P.roof, 41)));
+    drawGable(pc, ox, oy, { a0: -0.5, b0: -0.5, a1: 1.5, b1: 0.42, z1: 26, ridge: 10, axis: 'u', overhang: 0.06 }, (f) => (f.kind === 'gable' ? pick(P.wood, 2.2 + (f.s % 4 < 1 ? -0.7 : 0)) : tiles(f, P.roof, 41)));
+    drawBox(pc, ox, oy, { a0: -0.45, b0: -0.45, a1: 1.45, b1: 1.45, z1: 1 }, (f) => (f.kind === 'top' ? pick(P.dirt, 3.4 + (hash2(Math.floor(f.s / 3), Math.floor(f.t / 3), 2) > 0.8 ? 1.2 : 0)) : pick(P.dirt, BIAS[f.kind] - 0.6))); // sawdust yard
     drawBox(pc, ox, oy, { a0: 0.1, b0: 0.6, a1: 1.2, b1: 0.95, z1: 10 }, (f) => pick(P.steel, BIAS[f.kind] + 0.4));
     const [cx, cy] = isoPt(ox, oy, 0.65, 0.78, 16);
     for (let y = -9; y <= 9; y++) for (let x = -9; x <= 9; x++) {
@@ -748,6 +790,16 @@ export function kiln(): Built {
     if (y % 3 === 0 || (x + off) % 7 === 0) return pick(P.cream, 0.9 + base * 0.25);
     return pick(P.brick, base + (hash2(Math.floor((x + off) / 7), row, seed) - 0.5) * 0.9);
   };
+  // a flagstone yard fills the whole 2x2 footprint, with firewood stacked at the back corner
+  drawBox(pc, ox, oy, { a0: -0.45, b0: -0.45, a1: 1.45, b1: 1.45, z1: 2 }, (f) => {
+    if (f.kind !== 'top') return pick(P.stone, BIAS[f.kind] - 0.2);
+    const cell = (Math.floor(f.s / 9) * 7 + Math.floor(f.t / 7) * 3) % 5;
+    return f.s % 9 < 1 || f.t % 7 < 1 ? pick(P.stone, 1.4) : pick(P.stone, 3.2 + cell * 0.25);
+  });
+  for (let k = 0; k < 3; k++) for (let j = 0; j < 3 - k; j++) {
+    const [lx, ly] = isoPt(ox, oy, -0.25 + j * 0.16 + k * 0.08, -0.25, 2 + k * 4);
+    drawCylinder(pc, lx, ly, 3, 3, (nx, _t, cap) => (cap ? pick(P.sand, 3.6) : pick(P.bark, 2.6 - nx)));
+  }
   // drum (its top is painted too: the dome's base circle sits on it, so there is no hole)
   drawCylinder(pc, cx, cy, R, H, (nx, t, cap, x, y) => {
     if (cap) return brick(x, y, 2.6 - nx * 1.2, 5);
